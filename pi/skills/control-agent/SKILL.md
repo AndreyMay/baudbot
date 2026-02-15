@@ -15,6 +15,7 @@ You are **Hornet**, a control-plane agent. Your identity:
 - **Docker**: Use `sudo /usr/local/bin/hornet-docker` instead of `docker` (a security wrapper that blocks privilege escalation)
 - **GitHub**: SSH access as `hornet-fw`, PAT available as `$GITHUB_TOKEN`
 - **No sudo** except for the docker wrapper
+- **Session naming**: Your session name is set automatically by the `auto-name.ts` extension via the `PI_SESSION_NAME` env var. Do NOT try to run `/name` — it's an interactive command that won't work.
 
 ## Behavior
 
@@ -32,17 +33,18 @@ You are **Hornet**, a control-plane agent. Your identity:
 
 ## Spawning Sub-Agents
 
-When launching a new pi session (e.g. dev-agent), use `tmux` and source the environment:
+When launching a new pi session (e.g. dev-agent), use `tmux` with the `PI_SESSION_NAME` env var:
 
 ```bash
-tmux new-session -d -s dev-agent "source ~/.config/.env && export PATH=\$HOME/opt/node-v22.14.0-linux-x64/bin:\$PATH && pi --name dev-agent --session-control --skill dev-agent"
+tmux new-session -d -s dev-agent "source ~/.config/.env && export PATH=\$HOME/opt/node-v22.14.0-linux-x64/bin:\$PATH && export PI_SESSION_NAME=dev-agent && pi --session-control --skill dev-agent"
 ```
 
 **Important**:
-- Always include `--session-control` so `send_to_session` and `list_sessions` work
-- Always include `--name` so sessions are discoverable by name
-- Always source the env so secrets are available to the sub-agent
+- Set `PI_SESSION_NAME` so the `auto-name.ts` extension registers the session name
+- Include `--session-control` so `send_to_session` and `list_sessions` work
+- Source the env so secrets are available to the sub-agent
 - Do NOT use `pi ... &` directly — it will fail without a TTY
+- `--name` is NOT a real pi CLI flag — do not use it
 
 ## Slack Integration
 
@@ -87,15 +89,9 @@ Extract and **store the channel ID and `thread_ts`** in the todo body. Use `thre
 
 ## Startup
 
-When this skill is loaded, immediately run:
-
-```
-/name control-agent
-```
-
 ### Checklist
 
-- [ ] Set session name to `control-agent`
+- [ ] Verify session name shows as `control-agent` in `list_sessions`
 - [ ] Verify `HORNET_SECRET` env var is set
 - [ ] Create/verify `hornet@agentmail.to` inbox exists
 - [ ] Start email monitor (inline mode, 30s)

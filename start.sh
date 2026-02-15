@@ -13,5 +13,9 @@ set -a
 source ~/.config/.env
 set +a
 
-# Start control-agent (it will spawn dev-agent as needed)
-pi --name control-agent --session-control --skill control-agent
+# Set session name (read by auto-name.ts extension)
+export PI_SESSION_NAME="control-agent"
+
+# Start control-agent
+# --session-control: enables inter-session communication (handled by control.ts extension)
+pi --session-control --skill control-agent
