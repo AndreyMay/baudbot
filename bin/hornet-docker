@@ -1,0 +1,45 @@
+#!/bin/bash
+# Docker wrapper for hornet_agent
+# Blocks privilege escalation vectors while allowing normal container usage
+
+BLOCKED=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --privileged)       echo "blocked: --privileged"; BLOCKED=1;;
+    --pid=host)         echo "blocked: --pid=host"; BLOCKED=1;;
+    --net=host)         echo "blocked: --net=host"; BLOCKED=1;;
+    --network=host)     echo "blocked: --network=host"; BLOCKED=1;;
+    --userns=host)      echo "blocked: --userns=host"; BLOCKED=1;;
+    --cap-add=ALL)      echo "blocked: --cap-add=ALL"; BLOCKED=1;;
+    --cap-add=SYS_ADMIN) echo "blocked: --cap-add=SYS_ADMIN"; BLOCKED=1;;
+    --cap-add=SYS_PTRACE) echo "blocked: --cap-add=SYS_PTRACE"; BLOCKED=1;;
+  esac
+done
+
+if [ "$BLOCKED" -eq 1 ]; then
+  exit 1
+fi
+
+# Block mounting root, /etc, /root, /home/bentlegen, or docker socket
+ARGS="$*"
+if echo "$ARGS" | grep -qP '(-v|--volume)[= ]\s*/(:|\s)'; then
+  echo "blocked: mounting host root /"; exit 1
+fi
+if echo "$ARGS" | grep -qP '(-v|--volume)[= ]\s*/etc[/:]'; then
+  echo "blocked: mounting /etc"; exit 1
+fi
+if echo "$ARGS" | grep -qP '(-v|--volume)[= ]\s*/root[/:]'; then
+  echo "blocked: mounting /root"; exit 1
+fi
+if echo "$ARGS" | grep -qP '(-v|--volume)[= ]\s*/home/bentlegen[/:]'; then
+  echo "blocked: mounting /home/bentlegen"; exit 1
+fi
+if echo "$ARGS" | grep -qP '(-v|--volume)[= ]\s*/var/run/docker\.sock'; then
+  echo "blocked: mounting docker socket"; exit 1
+fi
+if echo "$ARGS" | grep -qP '(-v|--volume)[= ]\s*/run/docker\.sock'; then
+  echo "blocked: mounting docker socket"; exit 1
+fi
+
+exec /usr/bin/docker "$@"
