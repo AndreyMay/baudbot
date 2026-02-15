@@ -13,6 +13,10 @@ set -a
 source ~/.config/.env
 set +a
 
+# Harden file permissions (pi defaults are too permissive)
+umask 077
+~/hornet/bin/harden-permissions.sh
+
 # Set session name (read by auto-name.ts extension)
 export PI_SESSION_NAME="control-agent"
 

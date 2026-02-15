@@ -15,7 +15,15 @@ hornet_agent (uid)
 └── ~/hornet/               # this repo
     ├── start.sh            # launch script
     ├── setup.sh            # install from scratch
-    ├── bin/hornet-docker    # Docker wrapper (blocks escalation)
+    ├── SECURITY.md         # trust boundaries & threat model
+    ├── bin/
+    │   ├── hornet-docker         # Docker wrapper (blocks escalation)
+    │   ├── harden-permissions.sh # Lock down pi state files
+    │   ├── security-audit.sh     # Check security posture
+    │   └── setup-firewall.sh     # Port-based network lockdown
+    ├── slack-bridge/
+    │   ├── bridge.mjs            # Slack ↔ pi bridge (Socket Mode)
+    │   └── package.json
     └── pi/
         ├── settings.json
         ├── skills/
@@ -23,6 +31,7 @@ hornet_agent (uid)
         │   └── dev-agent/SKILL.md
         └── extensions/
             ├── zen-provider.ts
+            ├── auto-name.ts
             ├── control.ts
             ├── todos.ts
             ├── agentmail/
@@ -45,15 +54,28 @@ hornet_agent (uid)
 
 ## Security
 
+See [SECURITY.md](SECURITY.md) for full trust boundaries and threat model.
+
 - Runs as unprivileged `hornet_agent` user — no sudo
 - Cannot read admin home directory
-- Docker access via wrapper that blocks:
-  - `--privileged`, `--pid=host`, `--net=host`
-  - `--cap-add=ALL`, `SYS_ADMIN`, `SYS_PTRACE`
-  - Mounting `/`, `/etc`, `/root`, admin home, docker socket
+- Docker access via wrapper that blocks privilege escalation
+- External content (Slack, email) wrapped with security boundaries before reaching LLM
+- Prompt injection detection logging in the Slack bridge
 - Secrets in `~/.config/.env` (600 perms, not in repo)
 - SSH key owner-only (700/600 perms)
-- Separate pi sessions — cannot see/control admin's pi
+
+### Security Scripts
+
+```bash
+# Check security posture
+~/hornet/bin/security-audit.sh
+
+# Lock down pi state file permissions (run on startup)
+~/hornet/bin/harden-permissions.sh
+
+# Apply port-based network restrictions (run as root)
+sudo ~/hornet/bin/setup-firewall.sh
+```
 
 ## Setup
 
