@@ -22,7 +22,15 @@ hornet_agent (uid)
         │   ├── control-agent/SKILL.md
         │   └── dev-agent/SKILL.md
         └── extensions/
-            └── zen-provider.ts
+            ├── zen-provider.ts
+            ├── control.ts
+            ├── todos.ts
+            ├── agentmail/
+            ├── email-monitor/
+            ├── kernel/
+            ├── files.ts
+            ├── context.ts
+            └── loop.ts
 ```
 
 ## Identity
@@ -50,7 +58,8 @@ hornet_agent (uid)
 ## Setup
 
 ```bash
-# Clone the repo
+# Clone the repo (need SSH key + known_hosts first)
+sudo su - hornet_agent -c 'ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null'
 sudo su - hornet_agent -c 'git clone git@github.com:modem-dev/hornet.git ~/hornet'
 
 # Run setup (as root)
@@ -71,6 +80,44 @@ sudo su - hornet_agent -c 'vim ~/.config/.env'
 sudo -u hornet_agent /home/hornet_agent/hornet/start.sh
 ```
 
+This starts the **control-agent**, which automatically spawns a **dev-agent** in a tmux session.
+
+## Monitoring
+
+Hornet uses tmux to manage sub-agent sessions. All commands run as `hornet_agent`.
+
+### List sessions
+
+```bash
+sudo -u hornet_agent tmux ls
+```
+
+### Watch the control-agent
+
+The control-agent runs in the foreground terminal where you launched `start.sh`.
+
+### Watch the dev-agent
+
+```bash
+sudo -u hornet_agent tmux attach -t dev-agent
+```
+
+Detach without killing: `Ctrl+b` then `d`
+
+### Kill everything
+
+```bash
+# Kill all hornet processes (pi sessions + tmux)
+sudo -u hornet_agent pkill -u hornet_agent
+```
+
+### Restart
+
+```bash
+sudo -u hornet_agent pkill -u hornet_agent
+sudo -u hornet_agent /home/hornet_agent/hornet/start.sh
+```
+
 ## Updating
 
 Changes to skills, extensions, or config are tracked in this repo. After pulling:
@@ -78,6 +125,13 @@ Changes to skills, extensions, or config are tracked in this repo. After pulling
 ```bash
 # settings.json needs to be copied (not symlinked, pi writes to it)
 sudo -u hornet_agent cp ~/hornet/pi/settings.json ~/.pi/agent/settings.json
+
+# Extension deps (if package.json changed)
+sudo -u hornet_agent bash -c '
+  export PATH=~/opt/node-v22.14.0-linux-x64/bin:$PATH
+  cd ~/hornet/pi/extensions/kernel && npm install
+  cd ~/hornet/pi/extensions/agentmail && npm install
+'
 ```
 
 Skills and extensions are symlinked and update automatically.
