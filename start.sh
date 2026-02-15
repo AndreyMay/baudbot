@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hornet Agent Launcher
-# Run as: sudo -u hornet_agent /home/hornet_agent/start.sh
+# Run as: sudo -u hornet_agent /home/hornet_agent/hornet/start.sh
 
 set -euo pipefail
 cd ~
@@ -14,4 +14,4 @@ source ~/.config/.env
 set +a
 
 # Start control-agent (it will spawn dev-agent as needed)
-pi --name control-agent --skill control-agent
+pi --name control-agent --session-control --skill control-agent
