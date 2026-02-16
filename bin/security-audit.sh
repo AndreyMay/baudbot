@@ -175,18 +175,30 @@ if [ -d "$HORNET_HOME/.pi/session-control" ]; then
 fi
 
 # Check for files owned by wrong user in hornet repo
+# NOTE: Protected files (bin/, hooks/, tool-guard.ts, security.mjs, etc.) are
+# intentionally owned by bentlegen/root as an extra defense layer. Only flag
+# unexpected non-hornet_agent ownership in agent-modifiable areas.
 if [ -d "$HORNET_HOME/hornet" ]; then
-  wrong_owner=$(find "$HORNET_HOME/hornet" -not -user hornet_agent -not -path '*/.git/objects/*' 2>/dev/null | wc -l)
+  wrong_owner=$(find "$HORNET_HOME/hornet" \
+    -not -user hornet_agent \
+    -not -path '*/.git/*' \
+    -not -path '*/bin/*' \
+    -not -path '*/hooks/*' \
+    -not -path '*/.github/*' -not -path '*/.github' \
+    -not -name '.secrets.baseline' \
+    -not -path '*/tool-guard.ts' \
+    -not -path '*/tool-guard.test.mjs' \
+    -not -path '*/security.mjs' \
+    -not -path '*/security.test.mjs' \
+    -not -name 'setup.sh' \
+    -not -name 'start.sh' \
+    -not -name 'SECURITY.md' \
+    2>/dev/null | wc -l)
   if [ "$wrong_owner" -gt 0 ]; then
-    if fix_action "Fix $wrong_owner file(s) with wrong ownership" \
-      find "$HORNET_HOME/hornet" -not -user hornet_agent -not -path '*/.git/objects/*' -exec chown hornet_agent:hornet_agent {} +; then
-      ok "File ownership fixed in hornet repo"
-    else
-      finding "WARN" "$wrong_owner file(s) in hornet repo not owned by hornet_agent" \
-        "Run: find ~/hornet -not -user hornet_agent -exec chown hornet_agent:hornet_agent {} +"
-    fi
+    finding "WARN" "$wrong_owner file(s) in hornet repo with unexpected ownership" \
+      "Review with: find ~/hornet -not -user hornet_agent -not -path '*/bin/*' -not -path '*/.git/*'"
   else
-    ok "All files in hornet repo owned by hornet_agent"
+    ok "File ownership correct (protected files admin-owned, rest agent-owned)"
   fi
 fi
 echo ""
@@ -209,6 +221,8 @@ leaked_files=$(find "$HORNET_HOME" -maxdepth 3 \
   -not -name 'redact-logs.sh' \
   -not -name 'scan-extensions.mjs' \
   -not -name 'setup.sh' \
+  -not -name '*.test.sh' \
+  -not -name '*.test.mjs' \
   -type f -perm /044 \
   -exec grep -l -E "$secret_patterns" {} \; 2>/dev/null | head -5 || true)
 
