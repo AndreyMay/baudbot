@@ -228,7 +228,7 @@ echo ""
 echo "Network"
 
 # Check if bridge is bound to localhost only
-bridge_bind=$(ss -tlnp 2>/dev/null | grep ':7890' | awk '{print $4}' | head -1)
+bridge_bind=$(ss -tlnp 2>/dev/null | grep ':7890' | awk '{print $4}' | head -1 || true)
 if [ -n "$bridge_bind" ]; then
   if echo "$bridge_bind" | grep -q '127.0.0.1'; then
     ok "Slack bridge bound to 127.0.0.1:7890"
@@ -273,7 +273,7 @@ echo ""
 
 echo "Services"
 if ss -tlnp 2>/dev/null | grep -q ':11434'; then
-  bind_addr=$(ss -tlnp 2>/dev/null | grep ':11434' | awk '{print $4}' | head -1)
+  bind_addr=$(ss -tlnp 2>/dev/null | grep ':11434' | awk '{print $4}' | head -1 || true)
   if echo "$bind_addr" | grep -qE '(0\.0\.0\.0|\*|::)'; then
     finding "INFO" "Ollama listening on $bind_addr (all interfaces)" \
       "Consider binding to 127.0.0.1 if not needed externally"
