@@ -49,6 +49,37 @@ const SENSITIVE_DELETE_PATHS = [
   /rm\s+(-[a-zA-Z]*\s+)*\/home\/(?!hornet_agent)/,
 ];
 
+// ── Workspace confinement (allow-list) ──────────────────────────────────────
+const ALLOWED_WRITE_PREFIXES = ["/home/hornet_agent/"];
+
+function isAllowedWritePath(filePath) {
+  return ALLOWED_WRITE_PREFIXES.some((p) => filePath.startsWith(p));
+}
+
+// ── Protected hornet paths ──────────────────────────────────────────────────
+const HORNET_DIR = "/home/hornet_agent/hornet";
+const PROTECTED_HORNET_PREFIXES = [`${HORNET_DIR}/bin/`, `${HORNET_DIR}/hooks/`];
+const PROTECTED_HORNET_FILES = [
+  `${HORNET_DIR}/pi/extensions/tool-guard.ts`,
+  `${HORNET_DIR}/pi/extensions/tool-guard.test.mjs`,
+  `${HORNET_DIR}/slack-bridge/security.mjs`,
+  `${HORNET_DIR}/slack-bridge/security.test.mjs`,
+  `${HORNET_DIR}/SECURITY.md`,
+  `${HORNET_DIR}/setup.sh`,
+  `${HORNET_DIR}/start.sh`,
+];
+
+function isProtectedHornetPath(filePath) {
+  for (const prefix of PROTECTED_HORNET_PREFIXES) {
+    if (filePath.startsWith(prefix)) return true;
+  }
+  for (const file of PROTECTED_HORNET_FILES) {
+    if (filePath === file) return true;
+  }
+  if (filePath.startsWith(`${HORNET_DIR}/.git/hooks/`)) return true;
+  return false;
+}
+
 function checkBashCommand(command) {
   for (const rule of BASH_DENY_RULES) {
     if (rule.pattern.test(command)) {
@@ -68,15 +99,13 @@ function checkBashCommand(command) {
   return { blocked: false, warned: false, rule: null };
 }
 
+// checkWritePath now uses the allow-list approach
 function checkWritePath(filePath) {
-  return (
-    filePath.startsWith("/etc/") ||
-    filePath.startsWith("/root/") ||
-    filePath.startsWith("/boot/") ||
-    filePath.startsWith("/proc/") ||
-    filePath.startsWith("/sys/") ||
-    (filePath.startsWith("/home/") && !filePath.startsWith("/home/hornet_agent/"))
-  );
+  // Allow-list: must be under allowed prefixes
+  if (!isAllowedWritePath(filePath)) return true; // blocked
+  // Then check protected paths
+  if (isProtectedHornetPath(filePath)) return true; // blocked
+  return false; // allowed
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -257,7 +286,28 @@ describe("tool-guard: sensitive delete paths blocked", () => {
   });
 });
 
-describe("tool-guard: write/edit path restrictions", () => {
+describe("tool-guard: workspace confinement (allow-list)", () => {
+  // ALLOWED: writes under /home/hornet_agent/
+  it("allows write to /home/hornet_agent/workspace/foo.ts", () => {
+    assert.equal(checkWritePath("/home/hornet_agent/workspace/foo.ts"), false);
+  });
+  it("allows write to /home/hornet_agent/hornet/pi/skills/new-skill/SKILL.md", () => {
+    assert.equal(checkWritePath("/home/hornet_agent/hornet/pi/skills/new-skill/SKILL.md"), false);
+  });
+  it("allows write to /home/hornet_agent/scripts/test.sh", () => {
+    assert.equal(checkWritePath("/home/hornet_agent/scripts/test.sh"), false);
+  });
+
+  // BLOCKED: outside /home/hornet_agent/
+  it("blocks write to /tmp/evil.sh", () => {
+    assert.equal(checkWritePath("/tmp/evil.sh"), true);
+  });
+  it("blocks write to /var/tmp/backdoor", () => {
+    assert.equal(checkWritePath("/var/tmp/backdoor"), true);
+  });
+  it("blocks edit to /tmp/foo", () => {
+    assert.equal(checkWritePath("/tmp/foo"), true);
+  });
   it("blocks write to /etc/hosts", () => {
     assert.equal(checkWritePath("/etc/hosts"), true);
   });
@@ -267,11 +317,11 @@ describe("tool-guard: write/edit path restrictions", () => {
   it("blocks write to other user's home", () => {
     assert.equal(checkWritePath("/home/admin_user/.bashrc"), true);
   });
-  it("allows write to hornet_agent home", () => {
-    assert.equal(checkWritePath("/home/hornet_agent/test.txt"), false);
+  it("blocks write to /opt/evil", () => {
+    assert.equal(checkWritePath("/opt/evil"), true);
   });
-  it("allows write to /tmp", () => {
-    assert.equal(checkWritePath("/tmp/test.txt"), false);
+  it("blocks write to /usr/local/bin/backdoor", () => {
+    assert.equal(checkWritePath("/usr/local/bin/backdoor"), true);
   });
   it("blocks write to /boot", () => {
     assert.equal(checkWritePath("/boot/vmlinuz"), true);
@@ -281,5 +331,19 @@ describe("tool-guard: write/edit path restrictions", () => {
   });
   it("blocks write to /sys", () => {
     assert.equal(checkWritePath("/sys/class"), true);
+  });
+
+  // BLOCKED: protected hornet paths (still blocked even though under allowed prefix)
+  it("blocks write to protected hornet path (tool-guard.ts)", () => {
+    assert.equal(checkWritePath("/home/hornet_agent/hornet/pi/extensions/tool-guard.ts"), true);
+  });
+  it("blocks write to protected hornet path (bin/)", () => {
+    assert.equal(checkWritePath("/home/hornet_agent/hornet/bin/security-audit.sh"), true);
+  });
+  it("blocks write to protected hornet path (setup.sh)", () => {
+    assert.equal(checkWritePath("/home/hornet_agent/hornet/setup.sh"), true);
+  });
+  it("blocks write to .git/hooks/", () => {
+    assert.equal(checkWritePath("/home/hornet_agent/hornet/.git/hooks/pre-commit"), true);
   });
 });

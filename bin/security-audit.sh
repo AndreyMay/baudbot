@@ -2,19 +2,23 @@
 # Security audit for Hornet agent infrastructure
 # Run as hornet_agent or admin user to check security posture
 #
-# Usage: ~/hornet/bin/security-audit.sh [--deep]
+# Usage: ~/hornet/bin/security-audit.sh [--deep] [--fix]
 #        sudo -u hornet_agent ~/hornet/bin/security-audit.sh --deep
+#        sudo -u hornet_agent ~/hornet/bin/security-audit.sh --fix
 #
 # --deep: Run the Node.js extension scanner for cross-pattern analysis
+# --fix:  Auto-remediate findings where possible
 
 set -euo pipefail
 
 HORNET_HOME="${HORNET_HOME:-/home/hornet_agent}"
 DEEP=0
+FIX=0
 for arg in "$@"; do
-  if [ "$arg" = "--deep" ]; then
-    DEEP=1
-  fi
+  case "$arg" in
+    --deep) DEEP=1 ;;
+    --fix)  FIX=1 ;;
+  esac
 done
 
 # Counters
@@ -22,6 +26,9 @@ critical=0
 warn=0
 info=0
 pass=0
+fixed=0
+skipped=0
+fix_errors=0
 
 finding() {
   local severity="$1"
@@ -41,9 +48,41 @@ ok() {
   pass=$((pass + 1))
 }
 
+# fix_action: attempt a remediation and report result
+# Usage: fix_action "description" command [args...]
+fix_action() {
+  local desc="$1"
+  shift
+  if [ "$FIX" -ne 1 ]; then
+    return 1  # signal: not fixed (caller should emit finding)
+  fi
+  if "$@" 2>/dev/null; then
+    echo "  🔧 FIXED:    $desc"
+    fixed=$((fixed + 1))
+    return 0
+  else
+    echo "  ❌ FIX-ERR:  $desc (command failed)"
+    fix_errors=$((fix_errors + 1))
+    return 1
+  fi
+}
+
+# fix_skip: report that fix was skipped (needs root, manual intervention, etc.)
+fix_skip() {
+  local desc="$1"
+  local reason="$2"
+  if [ "$FIX" -eq 1 ]; then
+    echo "  ⏭️  SKIPPED:  $desc — $reason"
+    skipped=$((skipped + 1))
+  fi
+}
+
 echo ""
 echo "🔒 Hornet Security Audit"
 echo "========================"
+if [ "$FIX" -eq 1 ]; then
+  echo "   Mode: auto-fix enabled"
+fi
 echo ""
 
 # ── Docker group ─────────────────────────────────────────────────────────────
@@ -52,6 +91,7 @@ echo "Docker Access"
 if id hornet_agent 2>/dev/null | grep -q '(docker)'; then
   finding "CRITICAL" "hornet_agent is in docker group" \
     "Can bypass hornet-docker wrapper via /usr/bin/docker directly"
+  fix_skip "Remove from docker group" "Requires root: sudo gpasswd -d hornet_agent docker"
 else
   ok "hornet_agent not in docker group"
 fi
@@ -87,7 +127,11 @@ check_perms() {
         sev="CRITICAL"
       fi
     fi
-    finding "$sev" "$desc is $actual (expected $expected)" "$path"
+    if fix_action "chmod $expected $path" chmod "$expected" "$path"; then
+      ok "$desc ($expected) [fixed]"
+    else
+      finding "$sev" "$desc is $actual (expected $expected)" "$path"
+    fi
   fi
 }
 
@@ -102,8 +146,13 @@ check_perms "$HORNET_HOME/.pi/agent/settings.json" "600" "Pi settings"
 if [ -d "$HORNET_HOME/.pi/agent/sessions" ]; then
   leaky_logs=$(find "$HORNET_HOME/.pi/agent/sessions" -name '*.jsonl' -perm /044 2>/dev/null | wc -l)
   if [ "$leaky_logs" -gt 0 ]; then
-    finding "WARN" "$leaky_logs session log(s) are group/world-readable" \
-      "Run: ~/hornet/bin/harden-permissions.sh"
+    if fix_action "Fix $leaky_logs session log permissions" \
+      find "$HORNET_HOME/.pi/agent/sessions" -name '*.jsonl' -perm /044 -exec chmod 600 {} +; then
+      ok "Session logs fixed to owner-only"
+    else
+      finding "WARN" "$leaky_logs session log(s) are group/world-readable" \
+        "Run: ~/hornet/bin/harden-permissions.sh"
+    fi
   else
     ok "Session logs are owner-only"
   fi
@@ -113,10 +162,31 @@ fi
 if [ -d "$HORNET_HOME/.pi/session-control" ]; then
   leaky_socks=$(find "$HORNET_HOME/.pi/session-control" -name '*.sock' -perm /044 2>/dev/null | wc -l)
   if [ "$leaky_socks" -gt 0 ]; then
-    finding "WARN" "$leaky_socks control socket(s) are group/world-accessible" \
-      "Other users could send commands to running agent sessions"
+    if fix_action "Fix $leaky_socks control socket permissions" \
+      find "$HORNET_HOME/.pi/session-control" -name '*.sock' -perm /044 -exec chmod 600 {} +; then
+      ok "Control sockets fixed to owner-only"
+    else
+      finding "WARN" "$leaky_socks control socket(s) are group/world-accessible" \
+        "Other users could send commands to running agent sessions"
+    fi
   else
     ok "Control sockets are owner-only"
+  fi
+fi
+
+# Check for files owned by wrong user in hornet repo
+if [ -d "$HORNET_HOME/hornet" ]; then
+  wrong_owner=$(find "$HORNET_HOME/hornet" -not -user hornet_agent -not -path '*/.git/objects/*' 2>/dev/null | wc -l)
+  if [ "$wrong_owner" -gt 0 ]; then
+    if fix_action "Fix $wrong_owner file(s) with wrong ownership" \
+      find "$HORNET_HOME/hornet" -not -user hornet_agent -not -path '*/.git/objects/*' -exec chown hornet_agent:hornet_agent {} +; then
+      ok "File ownership fixed in hornet repo"
+    else
+      finding "WARN" "$wrong_owner file(s) in hornet repo not owned by hornet_agent" \
+        "Run: find ~/hornet -not -user hornet_agent -exec chown hornet_agent:hornet_agent {} +"
+    fi
+  else
+    ok "All files in hornet repo owned by hornet_agent"
   fi
 fi
 echo ""
@@ -203,8 +273,19 @@ if [ -d "$HORNET_HOME/.pi/agent/sessions" ]; then
     -exec grep -lE '(sk-[a-zA-Z0-9]{20,}|xoxb-[0-9]{10,}|xapp-[0-9]{10,})' {} \; 2>/dev/null | wc -l || true)
   log_secrets="${log_secrets:-0}"
   if [ "$log_secrets" -gt 0 ]; then
-    finding "CRITICAL" "$log_secrets session log(s) contain possible API keys/tokens" \
-      "Review and redact: find ~/.pi/agent/sessions -name '*.jsonl' -exec grep -l 'sk-\|xoxb-\|xapp-' {} +"
+    if [ "$FIX" -eq 1 ] && [ -x "$HORNET_HOME/hornet/bin/redact-logs.sh" ]; then
+      echo "  🔧 Running log redaction..."
+      "$HORNET_HOME/hornet/bin/redact-logs.sh" 2>/dev/null && {
+        echo "  🔧 FIXED:    Redacted secrets from session logs"
+        fixed=$((fixed + 1))
+      } || {
+        echo "  ❌ FIX-ERR:  Log redaction failed"
+        fix_errors=$((fix_errors + 1))
+      }
+    else
+      finding "CRITICAL" "$log_secrets session log(s) contain possible API keys/tokens" \
+        "Review and redact: find ~/.pi/agent/sessions -name '*.jsonl' -exec grep -l 'sk-\|xoxb-\|xapp-' {} +"
+    fi
   else
     ok "No secrets detected in session logs"
   fi
@@ -220,6 +301,7 @@ if echo "$proc_mount" | grep -q 'hidepid=2'; then
 else
   finding "WARN" "/proc not mounted with hidepid=2" \
     "hornet_agent can see all system processes — run setup.sh or: sudo mount -o remount,hidepid=2,gid=<procview_gid> /proc"
+  fix_skip "Remount /proc with hidepid=2" "Requires root"
 fi
 echo ""
 
@@ -255,6 +337,7 @@ if command -v iptables &>/dev/null; then
   else
     finding "WARN" "No firewall rules for hornet_agent" \
       "Run: sudo ~/hornet/bin/setup-firewall.sh"
+    fix_skip "Install firewall rules" "Requires root: sudo ~/hornet/bin/setup-firewall.sh"
   fi
 fi
 
@@ -266,6 +349,87 @@ elif [ -f /etc/iptables/rules.v4 ] && grep -q 'HORNET_OUTPUT' /etc/iptables/rule
 else
   finding "WARN" "Firewall rules are NOT persistent across reboots" \
     "Install: sudo cp ~/hornet/bin/hornet-firewall.service /etc/systemd/system/ && sudo systemctl enable hornet-firewall"
+fi
+echo ""
+
+# Check for network logging rules
+if command -v iptables &>/dev/null; then
+  if iptables -L HORNET_OUTPUT -n 2>/dev/null | grep -qE "LOG.*hornet-(out|dns):"; then
+    ok "Network logging active (SYN + DNS)"
+  else
+    finding "WARN" "No network logging in firewall rules" \
+      "Run: sudo ~/hornet/bin/setup-firewall.sh to add LOG rules"
+  fi
+fi
+echo ""
+
+# ── Audit Log ────────────────────────────────────────────────────────────────
+
+echo "Audit Log"
+
+AUDIT_LOG_PRIMARY="/var/log/hornet/commands.log"
+AUDIT_LOG_FALLBACK="$HORNET_HOME/logs/commands.log"
+
+if [ -f "$AUDIT_LOG_PRIMARY" ]; then
+  ok "Audit log exists ($AUDIT_LOG_PRIMARY)"
+  # Check append-only attribute
+  if command -v lsattr &>/dev/null; then
+    log_attrs=$(lsattr "$AUDIT_LOG_PRIMARY" 2>/dev/null | awk '{print $1}' || true)
+    if echo "$log_attrs" | grep -q 'a'; then
+      ok "Audit log has append-only attribute (tamper-proof)"
+    else
+      finding "WARN" "Audit log missing append-only attribute" \
+        "Run: sudo chattr +a $AUDIT_LOG_PRIMARY"
+      fix_skip "Set append-only attribute" "Requires root: sudo chattr +a $AUDIT_LOG_PRIMARY"
+    fi
+  fi
+  # Check permissions
+  log_perms=$(stat -c '%a' "$AUDIT_LOG_PRIMARY" 2>/dev/null || echo "???")
+  if [ $((0$log_perms & 004)) -eq 0 ]; then
+    ok "Audit log is not world-readable ($log_perms)"
+  else
+    finding "WARN" "Audit log is world-readable ($log_perms)" \
+      "Run: sudo chmod 660 $AUDIT_LOG_PRIMARY"
+  fi
+elif [ -f "$AUDIT_LOG_FALLBACK" ]; then
+  finding "WARN" "Audit log using fallback location ($AUDIT_LOG_FALLBACK)" \
+    "For tamper-proof logging, set up /var/log/hornet/ as root with chattr +a"
+else
+  finding "WARN" "No audit log file found" \
+    "Create: mkdir -p $HORNET_HOME/logs && touch $HORNET_HOME/logs/commands.log"
+  if [ "$FIX" -eq 1 ]; then
+    if mkdir -p "$HORNET_HOME/logs" && touch "$HORNET_HOME/logs/commands.log" && chmod 600 "$HORNET_HOME/logs/commands.log" 2>/dev/null; then
+      echo "  🔧 FIXED:    Created fallback audit log at $AUDIT_LOG_FALLBACK"
+      fixed=$((fixed + 1))
+    else
+      echo "  ❌ FIX-ERR:  Could not create audit log"
+      fix_errors=$((fix_errors + 1))
+    fi
+  fi
+fi
+echo ""
+
+# ── Pre-commit hook ──────────────────────────────────────────────────────────
+
+echo "Pre-commit Hook"
+
+if [ -d "$HORNET_HOME/hornet/.git" ]; then
+  hook_path="$HORNET_HOME/hornet/.git/hooks/pre-commit"
+  if [ -f "$hook_path" ]; then
+    ok "Pre-commit hook installed"
+    hook_owner=$(stat -c '%U' "$hook_path" 2>/dev/null || echo "unknown")
+    if [ "$hook_owner" = "root" ]; then
+      ok "Pre-commit hook is root-owned (tamper-proof)"
+    else
+      finding "WARN" "Pre-commit hook owned by $hook_owner (should be root)" \
+        "Run: sudo chown root:root $hook_path"
+      fix_skip "Fix hook ownership" "Requires root: sudo chown root:root $hook_path"
+    fi
+  else
+    finding "WARN" "Pre-commit hook not installed" \
+      "Run: sudo cp ~/hornet/hooks/pre-commit $hook_path && sudo chown root:root $hook_path"
+    fix_skip "Install pre-commit hook" "Requires root"
+  fi
 fi
 echo ""
 
@@ -428,7 +592,21 @@ echo "  ✅ Pass:     $pass"
 echo "  ❌ Critical: $critical"
 echo "  ⚠️  Warn:     $warn"
 echo "  ℹ️  Info:     $info"
+
+if [ "$FIX" -eq 1 ]; then
+  echo ""
+  echo "  🔧 Fixed:    $fixed"
+  echo "  ⏭️  Skipped:  $skipped"
+  echo "  ❌ Errors:   $fix_errors"
+fi
 echo ""
+
+if [ "$FIX" -eq 1 ] && [ "$fixed" -gt 0 ]; then
+  echo "🔧 $fixed fix(es) applied."
+  [ "$skipped" -gt 0 ] && echo "⏭️  $skipped fix(es) skipped (require root or manual intervention)."
+  [ "$fix_errors" -gt 0 ] && echo "❌ $fix_errors fix(es) failed."
+  echo ""
+fi
 
 if [ "$critical" -gt 0 ]; then
   echo "🚨 $critical critical finding(s) — fix immediately!"

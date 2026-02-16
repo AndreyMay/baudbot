@@ -10,6 +10,33 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import { appendFileSync } from "node:fs";
+
+// ── Audit logging ───────────────────────────────────────────────────────────
+// Append-only log of every tool call for forensic analysis.
+// Preferred: /var/log/hornet/commands.log (root-owned, chattr +a for tamper-proof)
+// Fallback: ~/logs/commands.log (hornet_agent-owned, not append-only but still useful)
+import { existsSync } from "node:fs";
+const AUDIT_LOG_PRIMARY = "/var/log/hornet/commands.log";
+const AUDIT_LOG_FALLBACK = "/home/hornet_agent/logs/commands.log";
+const AUDIT_LOG = existsSync(AUDIT_LOG_PRIMARY)
+  ? AUDIT_LOG_PRIMARY
+  : AUDIT_LOG_FALLBACK;
+
+function auditLog(entry: {
+  tool: string;
+  command?: string;
+  path?: string;
+  blocked: boolean;
+  rule?: string;
+}) {
+  try {
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
+    appendFileSync(AUDIT_LOG, line + "\n");
+  } catch {
+    // Don't let logging failures break tool execution
+  }
+}
 
 type DenyRule = {
   id: string;
@@ -163,6 +190,15 @@ const SENSITIVE_DELETE_PATHS = [
   /rm\s+(-[a-zA-Z]*\s+)*\/home\/(?!hornet_agent)/,
 ];
 
+// ── Workspace confinement ───────────────────────────────────────────────────
+// ALLOW LIST: write/edit tools are confined to these prefixes.
+// Everything else is blocked. This replaces the old deny-list approach.
+const ALLOWED_WRITE_PREFIXES = ["/home/hornet_agent/"];
+
+function isAllowedWritePath(filePath: string): boolean {
+  return ALLOWED_WRITE_PREFIXES.some((p) => filePath.startsWith(p));
+}
+
 // ── Protected hornet paths ──────────────────────────────────────────────────
 // Security-critical files in the hornet repo that the agent must not modify.
 // Defense-in-depth: the pre-commit hook also blocks these, but this catches
@@ -200,10 +236,23 @@ export default function (pi: ExtensionAPI) {
     if (isToolCallEventType("bash", event)) {
       const command = event.input.command ?? "";
 
+      // Audit log (before any deny checks, so we log blocked commands too)
+      auditLog({
+        tool: "bash",
+        command: command.slice(0, 2000),
+        blocked: false,
+      });
+
       // Check deny rules
       for (const rule of BASH_DENY_RULES) {
         if (rule.pattern.test(command)) {
           if (rule.severity === "block") {
+            auditLog({
+              tool: "bash",
+              command: command.slice(0, 2000),
+              blocked: true,
+              rule: rule.id,
+            });
             console.error(
               `🛡️ TOOL-GUARD BLOCKED [${rule.id}]: ${rule.label}\n   Command: ${command.slice(0, 200)}`,
             );
@@ -222,12 +271,19 @@ export default function (pi: ExtensionAPI) {
       // Check sensitive write paths
       for (const pattern of SENSITIVE_WRITE_PATHS) {
         if (pattern.test(command)) {
+          auditLog({
+            tool: "bash",
+            command: command.slice(0, 2000),
+            blocked: true,
+            rule: "sensitive-write",
+          });
           console.error(
             `🛡️ TOOL-GUARD BLOCKED [sensitive-write]: Write to sensitive path\n   Command: ${command.slice(0, 200)}`,
           );
           return {
             block: true,
-            reason: "🛡️ Blocked by tool-guard: Write to sensitive system path. This operation is not allowed.",
+            reason:
+              "🛡️ Blocked by tool-guard: Write to sensitive system path. This operation is not allowed.",
           };
         }
       }
@@ -235,37 +291,55 @@ export default function (pi: ExtensionAPI) {
       // Check sensitive delete paths
       for (const pattern of SENSITIVE_DELETE_PATHS) {
         if (pattern.test(command)) {
+          auditLog({
+            tool: "bash",
+            command: command.slice(0, 2000),
+            blocked: true,
+            rule: "sensitive-delete",
+          });
           console.error(
             `🛡️ TOOL-GUARD BLOCKED [sensitive-delete]: Delete of sensitive path\n   Command: ${command.slice(0, 200)}`,
           );
           return {
             block: true,
-            reason: "🛡️ Blocked by tool-guard: Delete of sensitive system path. This operation is not allowed.",
+            reason:
+              "🛡️ Blocked by tool-guard: Delete of sensitive system path. This operation is not allowed.",
           };
         }
       }
     }
 
-    // Guard write tool — block writes to system paths and protected hornet files
+    // Guard write tool — workspace confinement + protected hornet files
     if (isToolCallEventType("write", event)) {
       const filePath = (event.input as { path?: string }).path ?? "";
-      if (
-        filePath.startsWith("/etc/") ||
-        filePath.startsWith("/root/") ||
-        filePath.startsWith("/boot/") ||
-        filePath.startsWith("/proc/") ||
-        filePath.startsWith("/sys/") ||
-        (filePath.startsWith("/home/") && !filePath.startsWith("/home/hornet_agent/"))
-      ) {
+
+      // Audit log
+      auditLog({ tool: "write", path: filePath, blocked: false });
+
+      // ALLOW LIST: only permit writes under hornet_agent's home
+      if (!isAllowedWritePath(filePath)) {
+        auditLog({
+          tool: "write",
+          path: filePath,
+          blocked: true,
+          rule: "workspace-confinement",
+        });
         console.error(
-          `🛡️ TOOL-GUARD BLOCKED [write-sensitive-path]: ${filePath}`,
+          `🛡️ TOOL-GUARD BLOCKED [workspace-confinement]: ${filePath}`,
         );
         return {
           block: true,
           reason: `🛡️ Blocked by tool-guard: Cannot write to ${filePath}. Only /home/hornet_agent/ is allowed.`,
         };
       }
+      // Then check protected hornet paths
       if (isProtectedHornetPath(filePath)) {
+        auditLog({
+          tool: "write",
+          path: filePath,
+          blocked: true,
+          rule: "protected-hornet",
+        });
         console.error(
           `🛡️ TOOL-GUARD BLOCKED [write-protected-hornet]: ${filePath}`,
         );
@@ -276,26 +350,37 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    // Guard edit tool — same path restrictions + protected hornet files
+    // Guard edit tool — same workspace confinement + protected hornet files
     if (isToolCallEventType("edit", event)) {
       const filePath = (event.input as { path?: string }).path ?? "";
-      if (
-        filePath.startsWith("/etc/") ||
-        filePath.startsWith("/root/") ||
-        filePath.startsWith("/boot/") ||
-        filePath.startsWith("/proc/") ||
-        filePath.startsWith("/sys/") ||
-        (filePath.startsWith("/home/") && !filePath.startsWith("/home/hornet_agent/"))
-      ) {
+
+      // Audit log
+      auditLog({ tool: "edit", path: filePath, blocked: false });
+
+      // ALLOW LIST: only permit edits under hornet_agent's home
+      if (!isAllowedWritePath(filePath)) {
+        auditLog({
+          tool: "edit",
+          path: filePath,
+          blocked: true,
+          rule: "workspace-confinement",
+        });
         console.error(
-          `🛡️ TOOL-GUARD BLOCKED [edit-sensitive-path]: ${filePath}`,
+          `🛡️ TOOL-GUARD BLOCKED [workspace-confinement]: ${filePath}`,
         );
         return {
           block: true,
           reason: `🛡️ Blocked by tool-guard: Cannot edit ${filePath}. Only /home/hornet_agent/ is allowed.`,
         };
       }
+      // Then check protected hornet paths
       if (isProtectedHornetPath(filePath)) {
+        auditLog({
+          tool: "edit",
+          path: filePath,
+          blocked: true,
+          rule: "protected-hornet",
+        });
         console.error(
           `🛡️ TOOL-GUARD BLOCKED [edit-protected-hornet]: ${filePath}`,
         );

@@ -41,6 +41,12 @@ iptables -w -X "$CHAIN" 2>/dev/null || true
 # Create a dedicated chain for hornet_agent
 iptables -w -N "$CHAIN"
 
+# ── Logging (SYN + DNS only — low volume) ────────────────────────────────────
+# Log all new outbound connections (SYN packets only to avoid flooding)
+iptables -w -A "$CHAIN" -p tcp --syn -j LOG --log-prefix "hornet-out: " --log-level info
+# Log DNS queries
+iptables -w -A "$CHAIN" -p udp --dport 53 -j LOG --log-prefix "hornet-dns: " --log-level info
+
 # ── Localhost: allow only specific services ──────────────────────────────────
 
 # ── Dev servers & frameworks ──────────────────────────────────────────────
