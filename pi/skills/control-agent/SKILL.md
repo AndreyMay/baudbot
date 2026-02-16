@@ -141,31 +141,33 @@ Extract the **Channel** and **Thread** values from the metadata. Use the Thread 
 
 ## Startup
 
-### Step 0: Clean stale sockets
+### Step 0: Clean stale sockets + restart Slack bridge
 
-Dead pi sessions leave behind `.sock` files in `~/.pi/session-control/`. These cause problems:
-- The Slack bridge may pick the wrong socket or fail with "multiple sessions found"
-- `list_sessions` may show ghost entries
+Dead pi sessions leave behind `.sock` files in `~/.pi/session-control/`. These cause:
+- The Slack bridge connecting to a dead socket → "Socket error: connect ENOENT"
+- `list_sessions` showing ghost entries
+- Bridge auto-detect failing with "multiple sessions found"
 
-On every startup, clean them by comparing against live sessions:
+**Run the startup-cleanup script** immediately after confirming your session is live:
+
+1. Call `list_sessions` to get live session UUIDs
+2. Run the cleanup script, passing all live UUIDs as arguments:
 ```bash
-# Get live session IDs from list_sessions
-LIVE_IDS=$(list_sessions output)  # use the list_sessions tool, not bash
-
-# Then remove any .sock file whose UUID is NOT in the live set
-for sock in ~/.pi/session-control/*.sock; do
-  [ -e "$sock" ] || continue
-  uuid=$(basename "$sock" .sock)
-  # If this UUID is not a live session, remove it
-done
+bash ~/.pi/agent/skills/control-agent/startup-cleanup.sh UUID1 UUID2 UUID3
 ```
+
+The script:
+- Removes any `.sock` file whose UUID is NOT in the live set
+- Cleans stale `.alias` symlinks pointing to removed sockets
+- Kills and restarts the `slack-bridge` tmux session with the current `control-agent` UUID
+- Verifies the bridge is responsive (HTTP 400 from the API = healthy)
 
 **WARNING**: Do NOT use `socat` or any socket-connect test to check liveness — pi sockets don't respond to raw connections and deleting a live socket is **unrecoverable** (the socket is only created at session start). Only remove sockets for sessions that are confirmed dead via `list_sessions`.
 
 ### Checklist
 
-- [ ] Clean stale sockets (Step 0 above)
-- [ ] Verify session name shows as `control-agent` in `list_sessions`
+- [ ] Run `list_sessions` — note live UUIDs, confirm `control-agent` is listed
+- [ ] Run `startup-cleanup.sh` with live UUIDs (cleans sockets + restarts Slack bridge)
 - [ ] Verify `HORNET_SECRET` env var is set
 - [ ] Create/verify `hornet@agentmail.to` inbox exists
 - [ ] Start email monitor (inline mode, **300s / 5 min**)
@@ -181,7 +183,6 @@ done
   3. If not found, launch with tmux (see below)
   4. Wait ~8 seconds, then send role assignment
 - [ ] Send role assignment to the `sentry-agent` session
-- [ ] Start Slack bridge (see below)
 
 ### Spawning sentry-agent
 
@@ -197,27 +198,19 @@ The sentry-agent operates in **on-demand mode** — it does NOT poll. Sentry ale
 
 ### Starting the Slack Bridge
 
-The Slack bridge (Socket Mode) receives real-time Slack events and forwards them to this session. It also provides an outbound HTTP API on port 7890.
+The Slack bridge (Socket Mode) receives real-time Slack events and forwards them to this session via port 7890.
 
-**Always run the bridge in its own tmux session** — never inline. Running inline blocks your session while waiting for agent responses.
+**The `startup-cleanup.sh` script handles bridge (re)start automatically** — it reads the control-agent UUID from the `.alias` symlink and launches the bridge in a `slack-bridge` tmux session.
 
+If you need to restart the bridge manually:
 ```bash
-# Get your own session UUID for PI_SESSION_ID
-MY_UUID=$(ls ~/.pi/session-control/by-name/control-agent.sock 2>/dev/null | xargs readlink -f | xargs basename | sed 's/.sock//')
-
-# If by-name symlink doesn't exist, find it from list_sessions output
-# and set MY_UUID manually
-
-tmux new-session -d -s slack-bridge "set -a && source ~/.config/.env && set +a && export PATH=\$HOME/opt/node-v22.14.0-linux-x64/bin:\$PATH && export PI_SESSION_ID=$MY_UUID && cd ~/hornet/slack-bridge && exec node bridge.mjs"
+MY_UUID=$(readlink ~/.pi/session-control/control-agent.alias | sed 's/.sock$//')
+tmux kill-session -t slack-bridge 2>/dev/null || true
+tmux new-session -d -s slack-bridge \
+  "set -a && source ~/.config/.env && set +a && export PATH=\$HOME/opt/node-v22.14.0-linux-x64/bin:\$PATH && export PI_SESSION_ID=$MY_UUID && cd ~/hornet/slack-bridge && exec node bridge.mjs"
 ```
 
-**Important**: Always set `PI_SESSION_ID` explicitly to your control-agent UUID. Without it, the bridge tries to auto-detect from socket files and will fail if multiple sessions exist.
-
-Verify the bridge is up:
-```bash
-curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:7890/send -H 'Content-Type: application/json' -d '{}'
-```
-(Should return 400, meaning the API is responding.)
+Verify: `curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:7890/send -H 'Content-Type: application/json' -d '{}'` → should return `400`.
 
 The bridge forwards:
 - **Human @mentions and DMs** from allowed users → delivered to you with security boundaries for handling
