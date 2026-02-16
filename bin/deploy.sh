@@ -1,23 +1,22 @@
 #!/bin/bash
 # Deploy extensions and bridge from hornet source to agent runtime.
 #
-# Run as root (or bentlegen with sudo) after any admin change to ~/hornet/.
-# This copies files from the read-only source repo to their runtime locations,
-# setting appropriate ownership:
-#   - Security-critical files → root:hornet_agent 644 (agent can read, not write)
-#   - Agent-modifiable files → hornet_agent:hornet_agent 664
+# Invoked by the admin after editing ~/hornet/ source:
+#   sudo -u hornet_agent ~/hornet/bin/deploy.sh
+#   sudo -u hornet_agent ~/hornet/bin/deploy.sh --dry-run
 #
-# Usage:
-#   sudo ~/hornet/bin/deploy.sh           # deploy all
-#   sudo ~/hornet/bin/deploy.sh --dry-run # show what would change
+# Runs as hornet_agent so it can write to ~/.pi/agent/ and ~/runtime/.
+# Protected security files are made read-only (chmod a-w) after copy.
+# The agent owns these files but cannot write to them; tool-guard blocks
+# chmod at the pi level, and the source repo is always available to
+# re-deploy if runtime copies are tampered with.
 #
-# After deploy, restart the bridge if it's running:
-#   sudo -u hornet_agent bash -c 'tmux send-keys -t bridge C-c; sleep 1; tmux send-keys -t bridge "cd ~/runtime/slack-bridge && node bridge.mjs" Enter'
+# For stronger protection (root-owned runtime files, bind mount), run
+# setup.sh as root — it calls this script then applies root-level hardening.
 
 set -euo pipefail
 
-HORNET_SRC="/home/hornet_agent/hornet"
-AGENT_HOME="/home/hornet_agent"
+HORNET_SRC="$HOME/hornet"
 DRY_RUN=0
 
 for arg in "$@"; do
@@ -28,78 +27,65 @@ done
 
 log() { echo "  $1"; }
 
-deploy_file() {
-  local src="$1"
-  local dest="$2"
-  local owner="$3"
-  local mode="$4"
-
-  if [ "$DRY_RUN" -eq 1 ]; then
-    log "would copy: $src → $dest ($owner, $mode)"
-    return
-  fi
-  cp -a "$src" "$dest"
-  chown "$owner" "$dest"
-  chmod "$mode" "$dest"
-  log "✓ $(basename "$dest") ($owner, $mode)"
-}
+# Security-critical files — deployed read-only (chmod a-w)
+PROTECTED_EXTENSIONS=(tool-guard.ts tool-guard.test.mjs)
+PROTECTED_BRIDGE_FILES=(security.mjs security.test.mjs)
 
 # ── Extensions ───────────────────────────────────────────────────────────────
 
 echo "Deploying extensions..."
 
-# Security-critical extensions — root-owned, agent can read but not write
-PROTECTED_EXTENSIONS=(
-  "tool-guard.ts"
-  "tool-guard.test.mjs"
-)
-
-# Agent-modifiable extensions — hornet_agent-owned
-AGENT_EXTENSIONS=(
-  "auto-name.ts"
-  "zen-provider.ts"
-  "sentry-monitor.ts"
-)
-
 EXT_SRC="$HORNET_SRC/pi/extensions"
-EXT_DEST="$AGENT_HOME/.pi/agent/extensions"
+EXT_DEST="$HOME/.pi/agent/extensions"
 
-if [ "$DRY_RUN" -eq 0 ]; then
-  mkdir -p "$EXT_DEST"
-fi
+[ "$DRY_RUN" -eq 0 ] && mkdir -p "$EXT_DEST"
 
-# Deploy all extension files and subdirectories
 for ext in "$EXT_SRC"/*; do
   base=$(basename "$ext")
-
-  # Skip node_modules — those are built in-place
   [ "$base" = "node_modules" ] && continue
 
   if [ -d "$ext" ]; then
-    # Extension subdirectory (agentmail, kernel, email-monitor)
     if [ "$DRY_RUN" -eq 0 ]; then
-      rsync -a --delete "$ext/" "$EXT_DEST/$base/"
-      chown -R hornet_agent:hornet_agent "$EXT_DEST/$base/"
-      log "✓ $base/ (hornet_agent:hornet_agent)"
+      # Make destination writable first (source files may have been a-w)
+      if [ -d "$EXT_DEST/$base" ]; then
+        find "$EXT_DEST/$base" -type d -exec chmod u+w {} + 2>/dev/null || true
+        find "$EXT_DEST/$base" -type f -exec chmod u+w {} + 2>/dev/null || true
+      fi
+      mkdir -p "$EXT_DEST/$base"
+      cp -a "$ext/." "$EXT_DEST/$base/"
+      # Ensure everything is writable (cp -a preserves source's a-w perms)
+      find "$EXT_DEST/$base" -type d -exec chmod u+w {} + 2>/dev/null || true
+      find "$EXT_DEST/$base" -type f -exec chmod u+w {} + 2>/dev/null || true
+      log "✓ $base/"
     else
-      log "would rsync: $ext/ → $EXT_DEST/$base/ (hornet_agent:hornet_agent)"
+      log "would copy: $base/"
     fi
     continue
   fi
 
-  # Check if this is a protected extension
+  # Check if protected
   is_protected=0
   for pf in "${PROTECTED_EXTENSIONS[@]}"; do
-    if [ "$base" = "$pf" ]; then
-      is_protected=1
-      break
-    fi
+    [ "$base" = "$pf" ] && is_protected=1 && break
   done
 
-  if [ "$is_protected" -eq 1 ]; then
-    deploy_file "$ext" "$EXT_DEST/$base" "root:hornet_agent" "644"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    # Unlock destination if it exists and is read-only (from previous deploy)
+    [ -f "$EXT_DEST/$base" ] && chmod u+w "$EXT_DEST/$base" 2>/dev/null || true
+    cp -a "$ext" "$EXT_DEST/$base"
+    if [ "$is_protected" -eq 1 ]; then
+      chmod a-w "$EXT_DEST/$base"
+      log "✓ $base (read-only)"
+    else
+      chmod u+w "$EXT_DEST/$base"
+      log "✓ $base"
+    fi
   else
-    deploy_file "$ext" "$EXT_DEST/$base" "hornet_agent:hornet_agent" "664"
+    if [ "$is_protected" -eq 1 ]; then
+      log "would copy: $base (read-only)"
+    else
+      log "would copy: $base"
+    fi
   fi
 done
 
@@ -108,55 +94,44 @@ done
 echo "Deploying skills..."
 
 SKILLS_SRC="$HORNET_SRC/pi/skills"
-SKILLS_DEST="$AGENT_HOME/.pi/agent/skills"
+SKILLS_DEST="$HOME/.pi/agent/skills"
 
 if [ "$DRY_RUN" -eq 0 ]; then
   mkdir -p "$SKILLS_DEST"
-  rsync -a "$SKILLS_SRC/" "$SKILLS_DEST/"
-  chown -R hornet_agent:hornet_agent "$SKILLS_DEST/"
-  log "✓ skills/ (hornet_agent:hornet_agent)"
+  cp -a "$SKILLS_SRC/." "$SKILLS_DEST/"
+  log "✓ skills/"
 else
-  log "would rsync: $SKILLS_SRC/ → $SKILLS_DEST/ (hornet_agent:hornet_agent)"
+  log "would copy: skills/"
 fi
 
 # ── Slack Bridge ─────────────────────────────────────────────────────────────
 
-echo "Deploying slack-bridge runtime..."
+echo "Deploying slack-bridge..."
 
 BRIDGE_SRC="$HORNET_SRC/slack-bridge"
-BRIDGE_DEST="$AGENT_HOME/runtime/slack-bridge"
+BRIDGE_DEST="$HOME/runtime/slack-bridge"
 
 if [ "$DRY_RUN" -eq 0 ]; then
   mkdir -p "$BRIDGE_DEST"
-  rsync -a "$BRIDGE_SRC/" "$BRIDGE_DEST/"
 
-  # Security module — root-owned, agent cannot modify
-  chown root:hornet_agent "$BRIDGE_DEST/security.mjs"
-  chmod 644 "$BRIDGE_DEST/security.mjs"
-  log "✓ security.mjs (root:hornet_agent, 644)"
-
-  # Security tests — root-owned
-  if [ -f "$BRIDGE_DEST/security.test.mjs" ]; then
-    chown root:hornet_agent "$BRIDGE_DEST/security.test.mjs"
-    chmod 644 "$BRIDGE_DEST/security.test.mjs"
-    log "✓ security.test.mjs (root:hornet_agent, 644)"
-  fi
-
-  # Bridge logic — agent-modifiable
-  chown hornet_agent:hornet_agent "$BRIDGE_DEST/bridge.mjs"
-  chmod 664 "$BRIDGE_DEST/bridge.mjs"
-  log "✓ bridge.mjs (hornet_agent:hornet_agent, 664)"
-
-  # Package files and node_modules — agent-owned
-  chown -R hornet_agent:hornet_agent "$BRIDGE_DEST/node_modules" 2>/dev/null || true
-  for pf in package.json package-lock.json; do
-    [ -f "$BRIDGE_DEST/$pf" ] && chown hornet_agent:hornet_agent "$BRIDGE_DEST/$pf"
+  # Unlock protected files before bulk copy (so cp can overwrite them)
+  for pf in "${PROTECTED_BRIDGE_FILES[@]}"; do
+    [ -f "$BRIDGE_DEST/$pf" ] && chmod u+w "$BRIDGE_DEST/$pf" 2>/dev/null || true
   done
-  log "✓ node_modules/ + package files (hornet_agent:hornet_agent)"
+
+  cp -a "$BRIDGE_SRC/." "$BRIDGE_DEST/"
+
+  # Lock protected files read-only
+  for pf in "${PROTECTED_BRIDGE_FILES[@]}"; do
+    [ -f "$BRIDGE_DEST/$pf" ] && chmod a-w "$BRIDGE_DEST/$pf" && log "✓ $pf (read-only)"
+  done
+
+  # Agent-modifiable files stay writable
+  [ -f "$BRIDGE_DEST/bridge.mjs" ] && chmod u+w "$BRIDGE_DEST/bridge.mjs" && log "✓ bridge.mjs"
+
+  log "✓ node_modules/ + package files"
 else
-  log "would rsync: $BRIDGE_SRC/ → $BRIDGE_DEST/"
-  log "would set security.mjs → root:hornet_agent 644"
-  log "would set bridge.mjs → hornet_agent:hornet_agent 664"
+  log "would copy: slack-bridge/"
 fi
 
 # ── Settings ─────────────────────────────────────────────────────────────────
@@ -165,12 +140,11 @@ echo "Deploying settings..."
 
 if [ -f "$HORNET_SRC/pi/settings.json" ]; then
   if [ "$DRY_RUN" -eq 0 ]; then
-    cp "$HORNET_SRC/pi/settings.json" "$AGENT_HOME/.pi/agent/settings.json"
-    chown hornet_agent:hornet_agent "$AGENT_HOME/.pi/agent/settings.json"
-    chmod 600 "$AGENT_HOME/.pi/agent/settings.json"
-    log "✓ settings.json (hornet_agent:hornet_agent, 600)"
+    cp "$HORNET_SRC/pi/settings.json" "$HOME/.pi/agent/settings.json"
+    chmod 600 "$HOME/.pi/agent/settings.json"
+    log "✓ settings.json"
   else
-    log "would copy settings.json"
+    log "would copy: settings.json"
   fi
 fi
 
@@ -178,10 +152,10 @@ fi
 
 echo ""
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "🔍 Dry run complete — no changes made."
+  echo "🔍 Dry run — no changes made."
 else
-  echo "✅ Deploy complete."
+  echo "✅ Deployed. Protected files are read-only."
   echo ""
-  echo "If the slack bridge is running, restart it:"
+  echo "If the bridge is running, restart it:"
   echo "  sudo -u hornet_agent bash -c 'cd ~/runtime/slack-bridge && node bridge.mjs'"
 fi
