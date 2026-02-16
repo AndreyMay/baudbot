@@ -27,7 +27,7 @@ You **cannot** modify security files — they are protected by a root-owned pre-
 - `slack-bridge/security.mjs` (and its tests)
 - `SECURITY.md`, `setup.sh`, `start.sh`, `hooks/`
 
-If you need changes to protected files, report the need to the admin.
+These are enforced by three layers: admin file ownership (you cannot write to them), tool-guard (blocks tool calls), and a root-owned pre-commit hook (blocks commits). **Do NOT** attempt to fix file ownership or permissions on protected files — their admin ownership is intentional security. If you need changes, report the need to the admin.
 
 ## External Content Security
 

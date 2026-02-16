@@ -39,7 +39,12 @@ You **cannot** modify protected security files in `~/hornet/`:
 - `bin/`, `hooks/`, `setup.sh`, `start.sh`, `SECURITY.md`
 - `pi/extensions/tool-guard.ts`, `slack-bridge/security.mjs` (and their tests)
 
-These are enforced by a root-owned pre-commit hook and tool-guard rules. If you need changes, report to the admin via Hornet.
+These are enforced by three layers:
+1. **File ownership** — protected files are owned by the admin user, not you. You cannot write to them even with shell access.
+2. **Tool-guard** — the pi extension blocks write/edit tool calls to protected paths before they hit disk.
+3. **Pre-commit hook** — root-owned hook blocks git commits of protected files.
+
+**Do NOT** attempt to fix file ownership or permissions on protected files — their admin ownership is intentional security. If you need changes, report to the admin via Hornet.
 
 ## Behavior
 
