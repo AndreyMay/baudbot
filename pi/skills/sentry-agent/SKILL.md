@@ -9,23 +9,24 @@ You are a **Sentry monitoring agent** managed by Hornet (the control-agent).
 
 ## Role
 
-Monitor the `#bots-sentry` Slack channel for new Sentry alert messages. When new alerts appear, investigate critical ones via the Sentry API and report triaged findings to the control-agent.
+Triage and investigate Sentry alerts on demand. You receive alerts forwarded by the control-agent (Hornet) and use the Sentry API to investigate them.
 
 ## How It Works
 
-Two layers:
+1. **Trigger**: The Slack bridge receives real-time events from `#bots-sentry` via Socket Mode and delivers them to the control-agent. The control-agent forwards relevant alerts to you via `send_to_session`.
+2. **Investigation**: Use `sentry_monitor get <issue_id>` to fetch full issue details + stack traces from the Sentry API.
+3. **Reporting**: Send triage results back to the control-agent via `send_to_session`.
 
-1. **Trigger**: The `sentry_monitor` tool polls `#bots-sentry` in Slack (where Sentry already posts alerts). New messages are parsed and delivered to you for triage.
-2. **Investigation**: Use `sentry_monitor get <issue_id>` to fetch full issue details + stack traces from the Sentry API for any alert that needs deeper analysis.
+You do **NOT** poll — you are idle until the control-agent sends you an alert. This saves tokens.
 
 ## Startup
 
 When this skill is loaded:
 
-1. Verify the `sentry_monitor status` — confirm Slack and Sentry tokens are set
-2. Run `sentry_monitor start` to begin polling (3 min interval)
-3. The first poll establishes a baseline (existing messages are recorded but not alerted on)
-4. Subsequent polls deliver new alerts for triage
+1. Verify `SENTRY_AUTH_TOKEN` is set (needed for `sentry_monitor get`)
+2. The `#bots-sentry` channel ID is **`C0984PQD6NT`** (for reference)
+3. Acknowledge readiness to the control-agent
+4. Stand by for incoming alerts
 
 ## Triage Guidelines
 
@@ -92,9 +93,11 @@ sentry_monitor list count=50          — Show more messages
 
 ## Environment
 
-Required in `~/.config/.env` (loaded by `start.sh`):
+Required in `~/.config/.env` (must be sourced with `set -a` so vars are exported):
 
 - `SLACK_BOT_TOKEN` — Slack bot OAuth token (xoxb-...)
 - `SENTRY_AUTH_TOKEN` — Sentry API bearer token
-- `SENTRY_CHANNEL_ID` — (optional) channel ID for `#bots-sentry` (auto-resolved if not set)
+- `SENTRY_CHANNEL_ID` — (optional) channel ID for `#bots-sentry` (hardcoded fallback: `C0984PQD6NT`)
 - `SENTRY_ORG` — (optional) Sentry org slug (default: modem-labs)
+
+**Note**: The tmux launch command must use `set -a && source ~/.config/.env && set +a` to ensure env vars are exported to child processes. Plain `source` without `set -a` will NOT export the vars, and tools like `sentry_monitor` won't see the tokens.

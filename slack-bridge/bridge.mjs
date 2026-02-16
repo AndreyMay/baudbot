@@ -279,8 +279,32 @@ app.event("app_mention", async ({ event, say }) => {
 // Handle DMs and optional channel messages
 app.event("message", async ({ event, say }) => {
   const targetChannel = process.env.SLACK_CHANNEL_ID;
+  const sentryChannel = process.env.SENTRY_CHANNEL_ID || "C0984PQD6NT";
   const isDM = event.channel_type === "im";
   const isTargetChannel = targetChannel && event.channel === targetChannel;
+  const isSentryChannel = event.channel === sentryChannel;
+
+  // Forward #bots-sentry messages (including bot messages) as fire-and-forget
+  if (isSentryChannel) {
+    const text = event.text?.trim();
+    if (!text) return;
+    // Don't filter bot_id here — Sentry posts as a bot
+    const contextMessage = wrapExternalContent({
+      text,
+      source: "Slack (#bots-sentry)",
+      user: event.user || event.bot_id || "sentry-bot",
+      channel: event.channel,
+      threadTs: event.ts,
+    });
+    try {
+      // Fire and forget — don't wait for agent response, don't reply in channel
+      await enqueue(() => sendToAgent(socketPath, contextMessage));
+    } catch (err) {
+      console.error("Sentry alert forward error:", err.message);
+      refreshSocket();
+    }
+    return;
+  }
 
   if (!isDM && !isTargetChannel) return;
   if (event.bot_id || event.subtype) return; // ignore bots and edits

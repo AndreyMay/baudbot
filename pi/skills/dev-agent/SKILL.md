@@ -51,16 +51,10 @@ Before starting work, **read the project's agent guidance**:
 
 ## Startup
 
-When this skill is loaded, immediately run:
-
-```
-/name dev-agent
-```
-
-This sets the session name so other sessions and tools can find you.
+Your session name is set automatically by the `auto-name.ts` extension via the `PI_SESSION_NAME` env var. Do NOT try to run `/name` — it's an interactive command that won't work.
 
 ### Checklist
 
-- [ ] Set session name to `dev-agent`
+- [ ] Verify session name shows as `dev-agent` in `list_sessions`
 - [ ] Acknowledge role assignment from Hornet
 - [ ] Confirm access to project repo(s)

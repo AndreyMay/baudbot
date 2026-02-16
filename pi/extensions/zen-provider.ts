@@ -20,6 +20,20 @@ export default function (pi: ExtensionAPI) {
         contextWindow: 200000,
         maxTokens: 16384,
       },
+      {
+        id: "claude-haiku-4-5",
+        name: "Claude Haiku 4.5 (Zen)",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: {
+          input: 1.0,
+          output: 5.0,
+          cacheRead: 0.1,
+          cacheWrite: 1.25,
+        },
+        contextWindow: 200000,
+        maxTokens: 16384,
+      },
     ],
   });
 }

@@ -25,7 +25,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 const SENTRY_ORG = process.env.SENTRY_ORG || "modem-labs";
 const SENTRY_AUTH_TOKEN = process.env.SENTRY_AUTH_TOKEN || "";
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
-let SENTRY_CHANNEL_ID = process.env.SENTRY_CHANNEL_ID || "";
+let SENTRY_CHANNEL_ID = process.env.SENTRY_CHANNEL_ID || "C0984PQD6NT";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
