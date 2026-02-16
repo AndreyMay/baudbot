@@ -187,7 +187,7 @@ describe("tool-guard: privilege escalation blocked", () => {
     assert.equal(checkBashCommand("echo 'ALL ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers").blocked, true);
   });
   it("blocks SSH key injection to other user", () => {
-    assert.equal(checkBashCommand("echo 'ssh-rsa ...' > /home/bentlegen/.ssh/authorized_keys").blocked, true);
+    assert.equal(checkBashCommand("echo 'ssh-rsa ...' > /home/admin_user/.ssh/authorized_keys").blocked, true);
   });
   it("blocks SSH key injection to root", () => {
     assert.equal(checkBashCommand("echo 'ssh-rsa ...' > /root/.ssh/authorized_keys").blocked, true);
@@ -250,7 +250,7 @@ describe("tool-guard: sensitive delete paths blocked", () => {
     assert.equal(checkBashCommand("rm -rf /var").blocked, true);
   });
   it("blocks rm other user's home", () => {
-    assert.equal(checkBashCommand("rm -rf /home/bentlegen").blocked, true);
+    assert.equal(checkBashCommand("rm -rf /home/admin_user").blocked, true);
   });
   it("allows rm hornet_agent paths", () => {
     assert.equal(checkBashCommand("rm -rf /home/hornet_agent/tmp").blocked, false);
@@ -265,7 +265,7 @@ describe("tool-guard: write/edit path restrictions", () => {
     assert.equal(checkWritePath("/root/.bashrc"), true);
   });
   it("blocks write to other user's home", () => {
-    assert.equal(checkWritePath("/home/bentlegen/.bashrc"), true);
+    assert.equal(checkWritePath("/home/admin_user/.bashrc"), true);
   });
   it("allows write to hornet_agent home", () => {
     assert.equal(checkWritePath("/home/hornet_agent/test.txt"), false);

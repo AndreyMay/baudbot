@@ -20,7 +20,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │               BOUNDARY 2: OS User Isolation                      │
 │   hornet_agent (uid 1001) — separate home, no sudo              │
-│   Cannot read /home/bentlegen (admin home is 700)                │
+│   Cannot read admin home directory (admin home is 700)            │
 │   Docker only via wrapper (blocks --privileged, host mounts)     │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
@@ -37,18 +37,18 @@
 
 | User | Role | Sudo | Groups |
 |------|------|------|--------|
-| `bentlegen` | Admin (human) | `(ALL) ALL`, `(hornet_agent) NOPASSWD: ALL` | bentlegen, wheel, docker, hornet_agent |
+| `<admin_user>` | Admin (human) | `(ALL) ALL`, `(hornet_agent) NOPASSWD: ALL` | \<admin_user\>, wheel, docker, hornet_agent |
 | `hornet_agent` | Agent (automated) | Only `/usr/local/bin/hornet-docker` as root | hornet_agent |
 
-**bentlegen → hornet_agent access**: bentlegen is in the `hornet_agent` group and has `NOPASSWD: ALL` as hornet_agent via sudo. This is intentional for management. Run `bin/harden-permissions.sh` to ensure pi state files are owner-only (prevents passive group-level reads).
+**Admin → hornet_agent access**: The admin user is in the `hornet_agent` group and has `NOPASSWD: ALL` as hornet_agent via sudo. This is intentional for management. Run `bin/harden-permissions.sh` to ensure pi state files are owner-only (prevents passive group-level reads).
 
-**hornet_agent → bentlegen access**: None. Admin home is `700`, hornet_agent is not in the bentlegen group.
+**hornet_agent → admin access**: None. Admin home is `700`, hornet_agent is not in the admin user's group.
 
 ## Data Flows
 
 ```
 Slack @mention
-  → slack-bridge (Socket Mode, bentlegen user)
+  → slack-bridge (Socket Mode, admin user)
     → content wrapping (security boundaries added)
       → Unix socket (~/.pi/session-control/*.sock)
         → control-agent (pi session, hornet_agent user)

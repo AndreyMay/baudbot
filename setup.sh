@@ -87,11 +87,13 @@ sudo -u hornet_agent bash -c "
 "
 
 echo "=== Configuring git identity ==="
-sudo -u hornet_agent bash -c '
-  git config --global user.name "Ben Vinegar"
-  git config --global user.email "ben@benv.ca"
+GIT_USER_NAME="${GIT_USER_NAME:-hornet-fw}"
+GIT_USER_EMAIL="${GIT_USER_EMAIL:-hornet-fw@users.noreply.github.com}"
+sudo -u hornet_agent bash -c "
+  git config --global user.name '$GIT_USER_NAME'
+  git config --global user.email '$GIT_USER_EMAIL'
   git config --global init.defaultBranch main
-'
+"
 
 echo "=== Adding PATH to bashrc ==="
 if ! grep -q "node-v$NODE_VERSION" "$HORNET_HOME/.bashrc"; then
@@ -209,6 +211,7 @@ echo "     HORNET_SECRET=..."
 echo "     SLACK_BOT_TOKEN=xoxb-..."
 echo "     SLACK_APP_TOKEN=xapp-..."
 echo "     SLACK_ALLOWED_USERS=U01234,U56789  (REQUIRED — bridge refuses to start without this)"
+echo "     HORNET_ALLOWED_EMAILS=you@example.com  (comma-separated, for email monitor sender allowlist)"
 echo "  3. Add SSH key to hornet-fw GitHub account"
 echo "  4. Log out and back in for group membership to take effect"
 echo "     (both hornet_agent group and procview group)"

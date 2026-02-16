@@ -11,10 +11,9 @@ export default function (pi: ExtensionAPI) {
   let actionInstructions = "Read and summarize the email, then decide if any action is needed.";
   let useSubAgent = true;
   const activeSubAgents = new Set<string>();
-  const allowedSenders = new Set<string>([
-    "ben@modem.dev",
-    "ben.vinegar@gmail.com",
-  ]);
+  const allowedSenders = new Set<string>(
+    (process.env.HORNET_ALLOWED_EMAILS || "").split(",").map(s => s.trim()).filter(Boolean)
+  );
   const SHARED_SECRET = process.env.HORNET_SECRET || "changeme";
 
   // Restore state from session
@@ -222,7 +221,7 @@ export default function (pi: ExtensionAPI) {
       instructions: Type.Optional(
         Type.String({
           description:
-            "Instructions for the sub-agent when an email arrives (e.g. 'summarize and reply', 'forward to ben@modem.dev').",
+            "Instructions for the sub-agent when an email arrives (e.g. 'summarize and reply', 'forward to user@example.com').",
         })
       ),
       use_sub_agent: Type.Optional(
