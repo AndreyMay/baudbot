@@ -16,6 +16,7 @@
 #   7. Symlinks pi config from the repo
 #   8. Installs Slack bridge dependencies
 #   9. Sets up firewall and makes it persistent
+#  10. Enables /proc hidepid isolation (process visibility)
 #
 # After running, you still need to:
 #   - Set the hornet_agent password: sudo passwd hornet_agent
@@ -87,8 +88,8 @@ sudo -u hornet_agent bash -c "
 
 echo "=== Configuring git identity ==="
 sudo -u hornet_agent bash -c '
-  git config --global user.name "hornet-fw"
-  git config --global user.email "hornet@modem.codes"
+  git config --global user.name "Ben Vinegar"
+  git config --global user.email "ben@benv.ca"
   git config --global init.defaultBranch main
 '
 
@@ -165,6 +166,32 @@ systemctl daemon-reload
 systemctl enable hornet-firewall
 echo "Firewall will be restored on boot via systemd"
 
+echo "=== Setting up /proc isolation (hidepid) ==="
+# Create a group whose members can still see all processes.
+# The admin user is added; hornet_agent is NOT — it only sees its own processes.
+PROC_GID_GROUP="procview"
+if ! getent group "$PROC_GID_GROUP" &>/dev/null; then
+  groupadd "$PROC_GID_GROUP"
+  echo "Created group: $PROC_GID_GROUP"
+fi
+usermod -aG "$PROC_GID_GROUP" "$ADMIN_USER"
+PROC_GID=$(getent group "$PROC_GID_GROUP" | cut -d: -f3)
+
+# Apply immediately
+mount -o remount,hidepid=2,gid="$PROC_GID" /proc
+echo "Remounted /proc with hidepid=2,gid=$PROC_GID"
+
+# Persist in /etc/fstab (idempotent)
+if grep -q '^proc\s\+/proc' /etc/fstab; then
+  # Update existing proc line
+  sed -i "s|^proc\s\+/proc\s\+proc\s\+.*|proc /proc proc defaults,hidepid=2,gid=$PROC_GID 0 0|" /etc/fstab
+  echo "Updated existing /proc entry in /etc/fstab"
+else
+  echo "proc /proc proc defaults,hidepid=2,gid=$PROC_GID 0 0" >> /etc/fstab
+  echo "Added /proc entry to /etc/fstab"
+fi
+echo "Process isolation: hornet_agent can only see its own processes"
+
 echo "=== Hardening permissions ==="
 sudo -u hornet_agent "$REPO_DIR/bin/harden-permissions.sh"
 
@@ -184,6 +211,7 @@ echo "     SLACK_APP_TOKEN=xapp-..."
 echo "     SLACK_ALLOWED_USERS=U01234,U56789  (REQUIRED — bridge refuses to start without this)"
 echo "  3. Add SSH key to hornet-fw GitHub account"
 echo "  4. Log out and back in for group membership to take effect"
+echo "     (both hornet_agent group and procview group)"
 echo "  5. Launch: sudo -u hornet_agent $HORNET_HOME/hornet/start.sh"
 echo ""
 echo "To verify security posture:"

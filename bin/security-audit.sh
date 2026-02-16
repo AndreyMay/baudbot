@@ -211,6 +211,18 @@ if [ -d "$HORNET_HOME/.pi/agent/sessions" ]; then
 fi
 echo ""
 
+# ── Process Isolation ─────────────────────────────────────────────────────────
+
+echo "Process Isolation"
+proc_mount=$(grep '^proc /proc' /proc/mounts 2>/dev/null || true)
+if echo "$proc_mount" | grep -q 'hidepid=2'; then
+  ok "/proc mounted with hidepid=2 (hornet_agent can only see own processes)"
+else
+  finding "WARN" "/proc not mounted with hidepid=2" \
+    "hornet_agent can see all system processes — run setup.sh or: sudo mount -o remount,hidepid=2,gid=<procview_gid> /proc"
+fi
+echo ""
+
 # ── Network ──────────────────────────────────────────────────────────────────
 
 echo "Network"
