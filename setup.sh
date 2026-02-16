@@ -29,7 +29,8 @@ set -euo pipefail
 
 ADMIN_USER="${1:?Usage: $0 <admin_user>}"
 HORNET_HOME="/home/hornet_agent"
-REPO_DIR="$HORNET_HOME/hornet"
+# Source repo auto-detected from this script's location (can live anywhere)
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 NODE_VERSION="22.14.0"
 
 echo "=== Creating hornet_agent user ==="
@@ -100,7 +101,7 @@ echo "=== Configuring shared repo permissions ==="
 # Set core.sharedRepository=group on all repos so git creates objects
 # with group-write perms. Without this, umask 077 in start.sh causes
 # new .git/objects to be owner-only, breaking group access (admin user).
-for repo in "$HORNET_HOME/hornet" "$HORNET_HOME/workspace/modem" "$HORNET_HOME/workspace/website"; do
+for repo in "$REPO_DIR" "$HORNET_HOME/workspace/modem" "$HORNET_HOME/workspace/website"; do
   if [ -d "$repo/.git" ]; then
     sudo -u hornet_agent git -C "$repo" config core.sharedRepository group
     echo "  ✓ $repo"
@@ -161,47 +162,30 @@ sudo -u hornet_agent bash -c '
   mkdir -p ~/runtime/slack-bridge
 '
 
-echo "=== Installing extension dependencies (in source) ==="
-sudo -u hornet_agent bash -c "
-  cd ~
-  export PATH=~/opt/node-v$NODE_VERSION-linux-x64/bin:\$PATH
-  for dir in \$(find ~/hornet/pi/extensions -name package.json -not -path '*/node_modules/*' -exec dirname {} \;); do
-    echo \"  Installing deps in \$dir\"
-    cd \"\$dir\" && npm install
-  done
-"
+echo "=== Installing extension dependencies ==="
+# npm install runs in source (admin-owned) then deploy copies to runtime
+NODE_BIN="$HORNET_HOME/opt/node-v$NODE_VERSION-linux-x64/bin"
+export PATH="$NODE_BIN:$PATH"
+for dir in $(find "$REPO_DIR/pi/extensions" -name package.json -not -path '*/node_modules/*' -exec dirname {} \;); do
+  echo "  Installing deps in $dir"
+  (cd "$dir" && npm install)
+done
 
-echo "=== Installing Slack bridge dependencies (in source) ==="
-sudo -u hornet_agent bash -c "
-  export PATH=~/opt/node-v$NODE_VERSION-linux-x64/bin:\$PATH
-  cd ~/hornet/slack-bridge && npm install
-"
+echo "=== Installing Slack bridge dependencies ==="
+(cd "$REPO_DIR/slack-bridge" && npm install)
 
 echo "=== Deploying from source to runtime ==="
-# deploy.sh copies extensions, skills, and bridge from ~/hornet/ to runtime dirs,
-# then sets appropriate permissions.
+# deploy.sh runs as admin (needs read access to source, write+chown to agent home).
+# It copies extensions, skills, bridge, and utility scripts to runtime dirs.
 "$REPO_DIR/bin/deploy.sh"
 echo "Deployed extensions, skills, and bridge to runtime directories"
 
-echo "=== Making ~/hornet/ read-only to agent ==="
-# Option A (preferred, kernel-enforced):
-mount --bind "$REPO_DIR" "$REPO_DIR"
-mount -o remount,bind,ro "$REPO_DIR"
-echo "Bind-mounted $REPO_DIR as read-only"
-
-# Persist the read-only bind mount via fstab
-if ! grep -q "$REPO_DIR.*bind" /etc/fstab; then
-  echo "$REPO_DIR $REPO_DIR none bind,ro 0 0" >> /etc/fstab
-  echo "Added read-only bind mount to /etc/fstab"
-fi
-
-# Fallback: also remove write permissions from agent-owned files
-# (defense-in-depth for when bind mount isn't available)
-sudo -u hornet_agent bash -c '
-  find ~/hornet -user hornet_agent -type d -exec chmod a-w {} + 2>/dev/null || true
-  find ~/hornet -user hornet_agent -type f -exec chmod a-w {} + 2>/dev/null || true
-'
-echo "Removed write permissions on agent-owned files in ~/hornet/"
+echo "=== Protecting source repo ==="
+# Source is now admin-owned (outside hornet_agent's home), so the agent
+# cannot write to it by default. Tool-guard also blocks writes to REPO_DIR.
+# If desired, a read-only bind mount can be added for defense-in-depth:
+#   mount --bind "$REPO_DIR" "$REPO_DIR" && mount -o remount,bind,ro "$REPO_DIR"
+echo "Source repo at $REPO_DIR is admin-owned (not writable by hornet_agent)"
 
 echo "=== Setting up firewall ==="
 "$REPO_DIR/bin/setup-firewall.sh"
@@ -239,7 +223,7 @@ fi
 echo "Process isolation: hornet_agent can only see its own processes"
 
 echo "=== Hardening permissions ==="
-sudo -u hornet_agent "$REPO_DIR/bin/harden-permissions.sh"
+sudo -u hornet_agent bash -c "'$REPO_DIR/bin/harden-permissions.sh'"
 
 echo ""
 echo "=== Setup complete ==="
@@ -259,10 +243,10 @@ echo "     HORNET_ALLOWED_EMAILS=you@example.com  (comma-separated, for email mo
 echo "  3. Add SSH key to hornet-fw GitHub account"
 echo "  4. Log out and back in for group membership to take effect"
 echo "     (both hornet_agent group and procview group)"
-echo "  5. Launch: sudo -u hornet_agent $HORNET_HOME/hornet/start.sh"
+echo "  5. Launch: sudo -u hornet_agent ~/runtime/start.sh"
 echo ""
 echo "To update runtime after editing source:"
-echo "  sudo $REPO_DIR/bin/deploy.sh"
+echo "  $REPO_DIR/bin/deploy.sh"
 echo ""
 echo "To verify security posture:"
-echo "  sudo -u hornet_agent $REPO_DIR/bin/security-audit.sh"
+echo "  $REPO_DIR/bin/security-audit.sh"

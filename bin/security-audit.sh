@@ -12,6 +12,8 @@
 set -euo pipefail
 
 HORNET_HOME="${HORNET_HOME:-/home/hornet_agent}"
+# Source repo — auto-detect from this script's location, or use env override
+HORNET_SRC="${HORNET_SRC:-$(cd "$(dirname "$0")/.." && pwd)}"
 DEEP=0
 FIX=0
 for arg in "$@"; do
@@ -175,29 +177,19 @@ if [ -d "$HORNET_HOME/.pi/session-control" ]; then
 fi
 echo ""
 
-# ── Source Repo Read-Only ────────────────────────────────────────────────────
+# ── Source Isolation & Integrity ──────────────────────────────────────────────
 
-echo "Source Repo Isolation"
+echo "Source Isolation & Integrity"
 
-# Check if ~/hornet/ is read-only via bind mount (strongest)
-hornet_mount=$(grep "$HORNET_HOME/hornet" /proc/mounts 2>/dev/null || true)
-if echo "$hornet_mount" | grep -q '\bro\b'; then
-  ok "~/hornet/ is read-only bind mount (kernel-enforced)"
-else
-  # Fallback: check if agent can write to ~/hornet/
-  if test -w "$HORNET_HOME/hornet" 2>/dev/null; then
-    finding "CRITICAL" "~/hornet/ directory is writable by agent" \
-      "Run: sudo mount --bind ~/hornet ~/hornet && sudo mount -o remount,bind,ro ~/hornet"
-    fix_skip "Make ~/hornet read-only" "Requires root: bind mount"
+# Source repo lives outside agent's home — agent should not be able to read it
+if [ -r "$HORNET_SRC/setup.sh" ] 2>/dev/null; then
+  # If we're running as admin, this is expected — check agent can't
+  agent_can_read=$(sudo -u hornet_agent test -r "$HORNET_SRC/setup.sh" 2>/dev/null && echo "yes" || echo "no")
+  if [ "$agent_can_read" = "yes" ]; then
+    finding "WARN" "Agent can read source repo at $HORNET_SRC" \
+      "Ensure admin home is 700: chmod 700 $(dirname "$HORNET_SRC")"
   else
-    # Check individual files
-    writable_count=$(find "$HORNET_HOME/hornet" -writable -not -path "*/.git/*" 2>/dev/null | wc -l || echo 0)
-    if [ "$writable_count" -gt 0 ]; then
-      finding "WARN" "$writable_count file(s) in ~/hornet/ are writable by agent" \
-        "Run: sudo -u hornet_agent find ~/hornet -user hornet_agent -exec chmod a-w {} +"
-    else
-      ok "~/hornet/ is not writable by agent (permissions)"
-    fi
+    ok "Source repo not readable by agent"
   fi
 fi
 
@@ -224,27 +216,58 @@ else
     "Run: deploy.sh"
 fi
 
-# Check runtime integrity — compare deployed security files against source
-if [ -f "$HORNET_HOME/.pi/agent/extensions/tool-guard.ts" ] && [ -f "$HORNET_HOME/hornet/pi/extensions/tool-guard.ts" ]; then
-  src_hash=$(sha256sum "$HORNET_HOME/hornet/pi/extensions/tool-guard.ts" 2>/dev/null | cut -d' ' -f1)
-  dst_hash=$(sha256sum "$HORNET_HOME/.pi/agent/extensions/tool-guard.ts" 2>/dev/null | cut -d' ' -f1)
-  if [ "$src_hash" = "$dst_hash" ]; then
-    ok "tool-guard.ts: runtime matches source"
-  else
-    finding "CRITICAL" "tool-guard.ts: runtime does NOT match source (possibly tampered)" \
-      "Re-deploy: sudo ~/hornet/bin/deploy.sh"
-  fi
+# Check version stamp exists
+VERSION_FILE="$HORNET_HOME/.pi/agent/hornet-version.json"
+MANIFEST_FILE="$HORNET_HOME/.pi/agent/hornet-manifest.json"
+
+if [ -f "$VERSION_FILE" ]; then
+  deploy_sha=$(grep '"short"' "$VERSION_FILE" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/' || echo "?")
+  deploy_ts=$(grep '"deployed_at"' "$VERSION_FILE" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/' || echo "?")
+  ok "Deployed version: $deploy_sha ($deploy_ts)"
+else
+  finding "WARN" "No version stamp found — run deploy.sh" ""
 fi
 
-if [ -f "$HORNET_HOME/runtime/slack-bridge/security.mjs" ] && [ -f "$HORNET_HOME/hornet/slack-bridge/security.mjs" ]; then
-  src_hash=$(sha256sum "$HORNET_HOME/hornet/slack-bridge/security.mjs" 2>/dev/null | cut -d' ' -f1)
-  dst_hash=$(sha256sum "$HORNET_HOME/runtime/slack-bridge/security.mjs" 2>/dev/null | cut -d' ' -f1)
-  if [ "$src_hash" = "$dst_hash" ]; then
-    ok "security.mjs: runtime matches source"
-  else
-    finding "CRITICAL" "security.mjs: runtime does NOT match source (possibly tampered)" \
-      "Re-deploy: sudo ~/hornet/bin/deploy.sh"
-  fi
+# Check runtime integrity via manifest (no source access needed)
+if [ -f "$MANIFEST_FILE" ]; then
+  tampered=0
+  missing=0
+
+  # Check security-critical files against manifest
+  for critical_file in \
+    ".pi/agent/extensions/tool-guard.ts" \
+    ".pi/agent/extensions/tool-guard.test.mjs" \
+    "runtime/slack-bridge/security.mjs" \
+    "runtime/slack-bridge/security.test.mjs"; do
+
+    full_path="$HORNET_HOME/$critical_file"
+    if [ ! -f "$full_path" ]; then
+      finding "WARN" "Missing critical file: $critical_file" "Run deploy.sh"
+      missing=$((missing + 1))
+      continue
+    fi
+
+    expected_hash=$(grep "\"$critical_file\"" "$MANIFEST_FILE" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/' || echo "")
+    if [ -z "$expected_hash" ]; then
+      finding "WARN" "$critical_file not in manifest" "Run deploy.sh to regenerate"
+      continue
+    fi
+
+    actual_hash=$(sha256sum "$full_path" 2>/dev/null | cut -d' ' -f1)
+    if [ "$actual_hash" = "$expected_hash" ]; then
+      ok "$critical_file: integrity OK"
+    else
+      finding "CRITICAL" "$critical_file: HASH MISMATCH (possibly tampered)" \
+        "Re-deploy: ~/hornet/bin/deploy.sh"
+      tampered=$((tampered + 1))
+    fi
+  done
+
+  [ "$tampered" -eq 0 ] && [ "$missing" -eq 0 ] && \
+    ok "All critical runtime files match deploy manifest"
+else
+  finding "WARN" "No deploy manifest found — cannot verify integrity" \
+    "Run deploy.sh to generate"
 fi
 echo ""
 
@@ -300,9 +323,9 @@ else
   ok "No stale .env copies found"
 fi
 
-# Check git history for committed secrets
-if [ -d "$HORNET_HOME/hornet/.git" ]; then
-  git_secrets=$(cd "$HORNET_HOME/hornet" && git log --all -p --diff-filter=A 2>/dev/null \
+# Check git history for committed secrets (admin-only — needs source access)
+if [ -d "$HORNET_SRC/.git" ] && [ -r "$HORNET_SRC/.git/HEAD" ]; then
+  git_secrets=$(cd "$HORNET_SRC" && git log --all -p --diff-filter=A 2>/dev/null \
     | grep -cE '(sk-[a-zA-Z0-9]{20,}|xoxb-[0-9]|xapp-[0-9]|ghp_[a-zA-Z0-9]{36}|AKIA[A-Z0-9]{16})' 2>/dev/null || true)
   git_secrets="${git_secrets:-0}"
   if [ "$git_secrets" -gt 0 ]; then
@@ -311,19 +334,18 @@ if [ -d "$HORNET_HOME/hornet/.git" ]; then
   else
     ok "No secrets detected in git history"
   fi
+else
+  finding "INFO" "Source repo not accessible — skipping git history scan (admin-only check)" ""
 fi
 
-# Check .gitignore excludes .env
-if [ -f "$HORNET_HOME/hornet/.gitignore" ]; then
-  if grep -q '\.env' "$HORNET_HOME/hornet/.gitignore" 2>/dev/null; then
+# Check .gitignore excludes .env (admin-only — needs source access)
+if [ -f "$HORNET_SRC/.gitignore" ] && [ -r "$HORNET_SRC/.gitignore" ]; then
+  if grep -q '\.env' "$HORNET_SRC/.gitignore" 2>/dev/null; then
     ok ".gitignore excludes .env files"
   else
     finding "WARN" ".gitignore does not exclude .env files" \
-      "Add '*.env' or '.env' to $HORNET_HOME/hornet/.gitignore"
+      "Add '*.env' or '.env' to $HORNET_SRC/.gitignore"
   fi
-elif [ -d "$HORNET_HOME/hornet/.git" ]; then
-  finding "WARN" "No .gitignore found in repo" \
-    "Create $HORNET_HOME/hornet/.gitignore with at minimum: .env"
 fi
 
 # Scan session logs for accidentally logged secrets
@@ -332,9 +354,10 @@ if [ -d "$HORNET_HOME/.pi/agent/sessions" ]; then
     -exec grep -lE '(sk-[a-zA-Z0-9]{20,}|xoxb-[0-9]{10,}|xapp-[0-9]{10,})' {} \; 2>/dev/null | wc -l || true)
   log_secrets="${log_secrets:-0}"
   if [ "$log_secrets" -gt 0 ]; then
-    if [ "$FIX" -eq 1 ] && [ -x "$HORNET_HOME/hornet/bin/redact-logs.sh" ]; then
+    REDACT_SCRIPT="${HORNET_SRC}/bin/redact-logs.sh"
+    if [ "$FIX" -eq 1 ] && [ -x "$REDACT_SCRIPT" ]; then
       echo "  🔧 Running log redaction..."
-      "$HORNET_HOME/hornet/bin/redact-logs.sh" 2>/dev/null && {
+      "$REDACT_SCRIPT" 2>/dev/null && {
         echo "  🔧 FIXED:    Redacted secrets from session logs"
         fixed=$((fixed + 1))
       } || {
@@ -472,8 +495,8 @@ echo ""
 
 echo "Pre-commit Hook"
 
-if [ -d "$HORNET_HOME/hornet/.git" ]; then
-  hook_path="$HORNET_HOME/hornet/.git/hooks/pre-commit"
+if [ -d "$HORNET_SRC/.git" ] && [ -r "$HORNET_SRC/.git/hooks" ]; then
+  hook_path="$HORNET_SRC/.git/hooks/pre-commit"
   if [ -f "$hook_path" ]; then
     ok "Pre-commit hook installed"
     hook_owner=$(stat -c '%U' "$hook_path" 2>/dev/null || echo "unknown")
@@ -489,6 +512,8 @@ if [ -d "$HORNET_HOME/hornet/.git" ]; then
       "Run: sudo cp ~/hornet/hooks/pre-commit $hook_path && sudo chown root:root $hook_path"
     fix_skip "Install pre-commit hook" "Requires root"
   fi
+else
+  finding "INFO" "Source repo not accessible — skipping pre-commit hook check (admin-only)" ""
 fi
 echo ""
 
@@ -528,11 +553,10 @@ echo ""
 
 echo "Extension & Skill Safety"
 
-# Check pi extensions for suspicious patterns
+# Check pi extensions for suspicious patterns (deployed copies only)
 suspicious_extension_patterns='(eval\s*\(|new\s+Function\s*\(|child_process|execSync|execFile|spawn\s*\(|writeFileSync.*\/etc|writeFileSync.*\/home\/(?!hornet_agent))'
 ext_dirs=(
   "$HORNET_HOME/.pi/agent/extensions"
-  "$HORNET_HOME/hornet/pi/extensions"
 )
 ext_findings=0
 for ext_dir in "${ext_dirs[@]}"; do
@@ -549,10 +573,9 @@ if [ "$ext_findings" -eq 0 ]; then
   ok "No suspicious patterns in extensions"
 fi
 
-# Check skills for dangerous tool instructions
+# Check skills for dangerous tool instructions (deployed copies only)
 skill_dirs=(
   "$HORNET_HOME/.pi/agent/skills"
-  "$HORNET_HOME/hornet/pi/skills"
 )
 skill_findings=0
 for skill_dir in "${skill_dirs[@]}"; do
@@ -581,18 +604,19 @@ for ext_dir in "${ext_dirs[@]}"; do
   fi
 done
 
-# Deep scan: cross-pattern analysis via Node scanner
+# Deep scan: cross-pattern analysis via Node scanner (deployed copies)
 if [ "$DEEP" -eq 1 ]; then
   NODE_BIN="$HORNET_HOME/opt/node-v22.14.0-linux-x64/bin/node"
-  SCANNER="$HORNET_HOME/hornet/bin/scan-extensions.mjs"
-  if [ -x "$NODE_BIN" ] && [ -f "$SCANNER" ]; then
+  # Try source scanner first, fall back to deployed copy
+  SCANNER=""
+  [ -f "$HORNET_SRC/bin/scan-extensions.mjs" ] && [ -r "$HORNET_SRC/bin/scan-extensions.mjs" ] && SCANNER="$HORNET_SRC/bin/scan-extensions.mjs"
+  [ -z "$SCANNER" ] && [ -f "$HORNET_HOME/.pi/agent/extensions/scan-extensions.mjs" ] && SCANNER="$HORNET_HOME/.pi/agent/extensions/scan-extensions.mjs"
+  if [ -x "$NODE_BIN" ] && [ -n "$SCANNER" ]; then
     echo ""
     echo "Deep Extension Scan (cross-pattern analysis)"
     deep_output=$("$NODE_BIN" "$SCANNER" \
       "$HORNET_HOME/.pi/agent/extensions" \
-      "$HORNET_HOME/hornet/pi/extensions" \
-      "$HORNET_HOME/.pi/agent/skills" \
-      "$HORNET_HOME/hornet/pi/skills" 2>&1 || true)
+      "$HORNET_HOME/.pi/agent/skills" 2>&1 || true)
     deep_critical=$(echo "$deep_output" | grep -c '❌ CRITICAL' || true)
     deep_warn=$(echo "$deep_output" | grep -c '⚠️' || true)
     if [ "$deep_critical" -gt 0 ]; then
@@ -618,11 +642,9 @@ if [ -f "$HORNET_HOME/runtime/slack-bridge/security.mjs" ]; then
     finding "WARN" "No tests for bridge security module in runtime" \
       "Run deploy.sh to copy from source"
   fi
-elif [ -f "$HORNET_HOME/hornet/slack-bridge/security.mjs" ]; then
-  ok "Bridge security module exists (source)"
 else
   finding "WARN" "Bridge security module not found" \
-    "Expected in ~/runtime/slack-bridge/security.mjs or ~/hornet/slack-bridge/security.mjs"
+    "Expected in ~/runtime/slack-bridge/security.mjs — run deploy.sh"
 fi
 echo ""
 

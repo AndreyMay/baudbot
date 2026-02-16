@@ -1,23 +1,28 @@
 #!/bin/bash
 # Deploy extensions and bridge from hornet source to agent runtime.
 #
-# Invoked by the admin after editing ~/hornet/ source:
-#   sudo -u hornet_agent ~/hornet/bin/deploy.sh
-#   sudo -u hornet_agent ~/hornet/bin/deploy.sh --dry-run
+# Run as admin:
+#   ~/hornet/bin/deploy.sh
+#   ~/hornet/bin/deploy.sh --dry-run
 #
-# Runs as hornet_agent so it can write to ~/.pi/agent/ and ~/runtime/.
+# The source repo lives in the admin's home (agent can't read it).
+# This script stages files to a temp dir, then uses sudo -u hornet_agent
+# to install them into the agent's runtime directories. It also stamps
+# a version file + hash manifest so the agent can verify integrity
+# without needing access to the source.
+#
 # Protected security files are made read-only (chmod a-w) after copy.
-# The agent owns these files but cannot write to them; tool-guard blocks
-# chmod at the pi level, and the source repo is always available to
-# re-deploy if runtime copies are tampered with.
-#
-# For stronger protection (root-owned runtime files, bind mount), run
-# setup.sh as root — it calls this script then applies root-level hardening.
 
-set -euo pipefail
-
-HORNET_SRC="$HOME/hornet"
+# Auto-detect source repo from this script's location
+HORNET_SRC="${HORNET_SRC:-$(cd "$(dirname "$0")/.." && pwd)}"
+HORNET_HOME="${HORNET_HOME:-/home/hornet_agent}"
+AGENT_USER="hornet_agent"
 DRY_RUN=0
+
+# Helper: run a command as hornet_agent
+as_agent() {
+  sudo -u "$AGENT_USER" "$@"
+}
 
 for arg in "$@"; do
   case "$arg" in
@@ -31,14 +36,49 @@ log() { echo "  $1"; }
 PROTECTED_EXTENSIONS=(tool-guard.ts tool-guard.test.mjs)
 PROTECTED_BRIDGE_FILES=(security.mjs security.test.mjs)
 
+# ── Stage source to temp dir (readable by agent) ────────────────────────────
+
+STAGE_DIR=$(mktemp -d /tmp/hornet-deploy.XXXXXX)
+chmod 755 "$STAGE_DIR"
+trap 'rm -rf "$STAGE_DIR"' EXIT
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  cp -r --no-preserve=ownership "$HORNET_SRC/pi/extensions" "$STAGE_DIR/extensions"
+  cp -r --no-preserve=ownership "$HORNET_SRC/pi/skills" "$STAGE_DIR/skills"
+  cp -r --no-preserve=ownership "$HORNET_SRC/slack-bridge" "$STAGE_DIR/slack-bridge"
+  cp --no-preserve=ownership "$HORNET_SRC/start.sh" "$STAGE_DIR/start.sh"
+  mkdir -p "$STAGE_DIR/bin"
+  for script in harden-permissions.sh redact-logs.sh; do
+    [ -f "$HORNET_SRC/bin/$script" ] && cp --no-preserve=ownership "$HORNET_SRC/bin/$script" "$STAGE_DIR/bin/$script"
+  done
+  [ -f "$HORNET_SRC/pi/settings.json" ] && cp --no-preserve=ownership "$HORNET_SRC/pi/settings.json" "$STAGE_DIR/settings.json"
+  chmod -R a+rX "$STAGE_DIR"
+fi
+
+# ── Unlock all existing deployed files ────────────────────────────────────────
+# Previous deploys may have left files/dirs read-only. Unlock before overwrite.
+# Runs before set -e so partial failures don't abort the script.
+# Uses chmod -R to handle dirs that lost execute bits.
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  as_agent chmod -R u+rwX "$HORNET_HOME/.pi/agent/extensions" 2>/dev/null || true
+  as_agent chmod -R u+rwX "$HORNET_HOME/.pi/agent/skills" 2>/dev/null || true
+  as_agent chmod -R u+rwX "$HORNET_HOME/runtime" 2>/dev/null || true
+  as_agent chmod u+w "$HORNET_HOME/.pi/agent/settings.json" 2>/dev/null || true
+  as_agent chmod u+w "$HORNET_HOME/.pi/agent/hornet-version.json" 2>/dev/null || true
+  as_agent chmod u+w "$HORNET_HOME/.pi/agent/hornet-manifest.json" 2>/dev/null || true
+fi
+
+set -euo pipefail
+
 # ── Extensions ───────────────────────────────────────────────────────────────
 
 echo "Deploying extensions..."
 
-EXT_SRC="$HORNET_SRC/pi/extensions"
-EXT_DEST="$HOME/.pi/agent/extensions"
+EXT_SRC="$STAGE_DIR/extensions"
+EXT_DEST="$HORNET_HOME/.pi/agent/extensions"
 
-[ "$DRY_RUN" -eq 0 ] && mkdir -p "$EXT_DEST"
+[ "$DRY_RUN" -eq 0 ] && as_agent mkdir -p "$EXT_DEST"
 
 for ext in "$EXT_SRC"/*; do
   base=$(basename "$ext")
@@ -47,15 +87,10 @@ for ext in "$EXT_SRC"/*; do
   if [ -d "$ext" ]; then
     if [ "$DRY_RUN" -eq 0 ]; then
       # Make destination writable first (source files may have been a-w)
-      if [ -d "$EXT_DEST/$base" ]; then
-        find "$EXT_DEST/$base" -type d -exec chmod u+w {} + 2>/dev/null || true
-        find "$EXT_DEST/$base" -type f -exec chmod u+w {} + 2>/dev/null || true
-      fi
-      mkdir -p "$EXT_DEST/$base"
-      cp -a "$ext/." "$EXT_DEST/$base/"
-      # Ensure everything is writable (cp -a preserves source's a-w perms)
-      find "$EXT_DEST/$base" -type d -exec chmod u+w {} + 2>/dev/null || true
-      find "$EXT_DEST/$base" -type f -exec chmod u+w {} + 2>/dev/null || true
+      as_agent bash -c "
+        mkdir -p '$EXT_DEST/$base'
+        cp -r '$ext/.' '$EXT_DEST/$base/'
+      "
       log "✓ $base/"
     else
       log "would copy: $base/"
@@ -70,14 +105,15 @@ for ext in "$EXT_SRC"/*; do
   done
 
   if [ "$DRY_RUN" -eq 0 ]; then
-    # Unlock destination if it exists and is read-only (from previous deploy)
-    [ -f "$EXT_DEST/$base" ] && chmod u+w "$EXT_DEST/$base" 2>/dev/null || true
-    cp -a "$ext" "$EXT_DEST/$base"
+    as_agent bash -c "
+      [ -f '$EXT_DEST/$base' ] && chmod u+w '$EXT_DEST/$base' 2>/dev/null || true
+      cp '$ext' '$EXT_DEST/$base'
+    "
     if [ "$is_protected" -eq 1 ]; then
-      chmod a-w "$EXT_DEST/$base"
+      as_agent chmod a-w "$EXT_DEST/$base"
       log "✓ $base (read-only)"
     else
-      chmod u+w "$EXT_DEST/$base"
+      as_agent chmod u+w "$EXT_DEST/$base"
       log "✓ $base"
     fi
   else
@@ -93,12 +129,11 @@ done
 
 echo "Deploying skills..."
 
-SKILLS_SRC="$HORNET_SRC/pi/skills"
-SKILLS_DEST="$HOME/.pi/agent/skills"
+SKILLS_SRC="$STAGE_DIR/skills"
+SKILLS_DEST="$HORNET_HOME/.pi/agent/skills"
 
 if [ "$DRY_RUN" -eq 0 ]; then
-  mkdir -p "$SKILLS_DEST"
-  cp -a "$SKILLS_SRC/." "$SKILLS_DEST/"
+  as_agent bash -c "mkdir -p '$SKILLS_DEST' && cp -r '$SKILLS_SRC/.' '$SKILLS_DEST/'"
   log "✓ skills/"
 else
   log "would copy: skills/"
@@ -108,44 +143,131 @@ fi
 
 echo "Deploying slack-bridge..."
 
-BRIDGE_SRC="$HORNET_SRC/slack-bridge"
-BRIDGE_DEST="$HOME/runtime/slack-bridge"
+BRIDGE_SRC="$STAGE_DIR/slack-bridge"
+BRIDGE_DEST="$HORNET_HOME/runtime/slack-bridge"
 
 if [ "$DRY_RUN" -eq 0 ]; then
-  mkdir -p "$BRIDGE_DEST"
-
-  # Unlock protected files before bulk copy (so cp can overwrite them)
-  for pf in "${PROTECTED_BRIDGE_FILES[@]}"; do
-    [ -f "$BRIDGE_DEST/$pf" ] && chmod u+w "$BRIDGE_DEST/$pf" 2>/dev/null || true
-  done
-
-  cp -a "$BRIDGE_SRC/." "$BRIDGE_DEST/"
+  as_agent bash -c "
+    mkdir -p '$BRIDGE_DEST'
+    # Unlock protected files before bulk copy
+    for pf in ${PROTECTED_BRIDGE_FILES[*]}; do
+      [ -f '$BRIDGE_DEST/\$pf' ] && chmod u+w '$BRIDGE_DEST/\$pf' 2>/dev/null || true
+    done
+    cp -r '$BRIDGE_SRC/.' '$BRIDGE_DEST/'
+  "
 
   # Lock protected files read-only
   for pf in "${PROTECTED_BRIDGE_FILES[@]}"; do
-    [ -f "$BRIDGE_DEST/$pf" ] && chmod a-w "$BRIDGE_DEST/$pf" && log "✓ $pf (read-only)"
+    if as_agent test -f "$BRIDGE_DEST/$pf"; then
+      as_agent chmod a-w "$BRIDGE_DEST/$pf"
+      log "✓ $pf (read-only)"
+    fi
   done
 
   # Agent-modifiable files stay writable
-  [ -f "$BRIDGE_DEST/bridge.mjs" ] && chmod u+w "$BRIDGE_DEST/bridge.mjs" && log "✓ bridge.mjs"
+  if as_agent test -f "$BRIDGE_DEST/bridge.mjs"; then
+    as_agent chmod u+w "$BRIDGE_DEST/bridge.mjs"
+    log "✓ bridge.mjs"
+  fi
 
   log "✓ node_modules/ + package files"
 else
   log "would copy: slack-bridge/"
 fi
 
+# ── Runtime bin (utility scripts + start.sh) ─────────────────────────────────
+
+echo "Deploying runtime scripts..."
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  as_agent mkdir -p "$HORNET_HOME/runtime/bin"
+
+  for script in harden-permissions.sh redact-logs.sh; do
+    if [ -f "$STAGE_DIR/bin/$script" ]; then
+      as_agent cp "$STAGE_DIR/bin/$script" "$HORNET_HOME/runtime/bin/$script"
+      as_agent chmod u+x "$HORNET_HOME/runtime/bin/$script"
+      log "✓ bin/$script"
+    fi
+  done
+
+  as_agent cp "$STAGE_DIR/start.sh" "$HORNET_HOME/runtime/start.sh"
+  as_agent chmod u+x "$HORNET_HOME/runtime/start.sh"
+  log "✓ start.sh"
+else
+  log "would copy: runtime scripts"
+fi
+
 # ── Settings ─────────────────────────────────────────────────────────────────
 
 echo "Deploying settings..."
 
-if [ -f "$HORNET_SRC/pi/settings.json" ]; then
+if [ -f "$STAGE_DIR/settings.json" ]; then
   if [ "$DRY_RUN" -eq 0 ]; then
-    cp "$HORNET_SRC/pi/settings.json" "$HOME/.pi/agent/settings.json"
-    chmod 600 "$HOME/.pi/agent/settings.json"
+    as_agent bash -c "cp '$STAGE_DIR/settings.json' '$HORNET_HOME/.pi/agent/settings.json' && chmod 600 '$HORNET_HOME/.pi/agent/settings.json'"
     log "✓ settings.json"
   else
     log "would copy: settings.json"
   fi
+fi
+
+# ── Version stamp + integrity manifest ────────────────────────────────────────
+
+echo "Stamping version..."
+
+VERSION_DIR="$HORNET_HOME/.pi/agent"
+VERSION_FILE="$VERSION_DIR/hornet-version.json"
+MANIFEST_FILE="$VERSION_DIR/hornet-manifest.json"
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  # Get git info from source (admin can read it)
+  GIT_SHA=$(cd "$HORNET_SRC" && git rev-parse HEAD 2>/dev/null || echo "unknown")
+  GIT_SHA_SHORT=$(cd "$HORNET_SRC" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  GIT_BRANCH=$(cd "$HORNET_SRC" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+  DEPLOY_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  # Write version file via agent
+  as_agent bash -c "cat > '$VERSION_FILE'" <<VEOF
+{
+  "sha": "$GIT_SHA",
+  "short": "$GIT_SHA_SHORT",
+  "branch": "$GIT_BRANCH",
+  "deployed_at": "$DEPLOY_TS",
+  "deployed_by": "$(whoami)"
+}
+VEOF
+  as_agent chmod 644 "$VERSION_FILE"
+  log "✓ hornet-version.json ($GIT_SHA_SHORT @ $GIT_BRANCH)"
+
+  # Generate sha256 manifest of all deployed files (excluding node_modules)
+  # Agent reads its own files to compute hashes
+  as_agent bash -c "
+    cd /tmp
+    {
+      echo '{'
+      echo '  \"generated_at\": \"$DEPLOY_TS\",'
+      echo '  \"source_sha\": \"$GIT_SHA\",'
+      echo '  \"files\": {'
+      first=1
+      for dir in '$HORNET_HOME/.pi/agent/extensions' '$HORNET_HOME/.pi/agent/skills' '$HORNET_HOME/runtime/slack-bridge' '$HORNET_HOME/runtime/bin'; do
+        if [ -d \"\$dir\" ]; then
+          while IFS= read -r f; do
+            hash=\$(sha256sum \"\$f\" | cut -d' ' -f1)
+            rel=\"\${f#$HORNET_HOME/}\"
+            [ \"\$first\" -eq 1 ] && first=0 || echo ','
+            printf '    \"%s\": \"%s\"' \"\$rel\" \"\$hash\"
+          done < <(find \"\$dir\" -type f -not -path '*/node_modules/*' -not -name '*.log' | sort)
+        fi
+      done
+      echo ''
+      echo '  }'
+      echo '}'
+    } > '$MANIFEST_FILE'
+    chmod 644 '$MANIFEST_FILE'
+  "
+  manifest_count=$(as_agent grep -c '": "' "$MANIFEST_FILE" 2>/dev/null || echo 0)
+  log "✓ hornet-manifest.json ($manifest_count files)"
+else
+  log "would stamp: hornet-version.json + hornet-manifest.json"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
@@ -154,7 +276,7 @@ echo ""
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "🔍 Dry run — no changes made."
 else
-  echo "✅ Deployed. Protected files are read-only."
+  echo "✅ Deployed $GIT_SHA_SHORT. Protected files are read-only."
   echo ""
   echo "If the bridge is running, restart it:"
   echo "  sudo -u hornet_agent bash -c 'cd ~/runtime/slack-bridge && node bridge.mjs'"

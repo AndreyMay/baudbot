@@ -32,9 +32,9 @@ const BASH_DENY_RULES = [
   { id: "chmod-777-sensitive", pattern: /chmod\s+(-[a-zA-Z]*\s+)?777\s+\/(etc|home|root|var|usr)/, label: "chmod 777 on sensitive path", severity: "block" },
   { id: "fork-bomb", pattern: /:\(\)\s*\{.*\|.*&.*\}/, label: "Fork bomb", severity: "block" },
   // Source repo protection
-  { id: "chmod-hornet-source", pattern: /chmod\b.*\/home\/hornet_agent\/hornet/, label: "chmod on read-only source repo ~/hornet/", severity: "block" },
-  { id: "chown-hornet-source", pattern: /chown\b.*\/home\/hornet_agent\/hornet/, label: "chown on read-only source repo ~/hornet/", severity: "block" },
-  { id: "tee-hornet-source", pattern: /tee\s+.*\/home\/hornet_agent\/hornet\//, label: "tee write to read-only source repo ~/hornet/", severity: "block" },
+  { id: "chmod-hornet-source", pattern: /chmod\b.*\/home\/bentlegen\/hornet/, label: "chmod on source repo ~/hornet/", severity: "block" },
+  { id: "chown-hornet-source", pattern: /chown\b.*\/home\/bentlegen\/hornet/, label: "chown on source repo ~/hornet/", severity: "block" },
+  { id: "tee-hornet-source", pattern: /tee\s+.*\/home\/bentlegen\/hornet\//, label: "tee write to source repo ~/hornet/", severity: "block" },
   { id: "chmod-runtime-security", pattern: /chmod\b.*\/(\.pi\/agent\/extensions\/tool-guard|runtime\/slack-bridge\/security)\./, label: "chmod on protected runtime security file", severity: "block" },
   // Credential exfiltration
   { id: "env-exfil-curl", pattern: /\benv\b.*\|\s*(curl|wget|nc)\b/, label: "Piping environment to network tool", severity: "block" },
@@ -63,7 +63,7 @@ function isAllowedWritePath(filePath) {
 }
 
 // ── Read-only source repo ───────────────────────────────────────────────────
-const HORNET_DIR = "/home/hornet_agent/hornet";
+const HORNET_DIR = "/home/bentlegen/hornet";
 
 // ── Protected runtime paths ─────────────────────────────────────────────────
 const PROTECTED_RUNTIME_FILES = [
@@ -118,7 +118,7 @@ function checkWritePath(filePath) {
 describe("tool-guard: safe commands pass through", () => {
   const safeCommands = [
     "ls -la /home/hornet_agent",
-    "cat /home/hornet_agent/hornet/start.sh",
+    "cat /home/bentlegen/hornet/start.sh",
     "git status",
     "npm test",
     "node --version",
@@ -257,16 +257,16 @@ describe("tool-guard: credential exfiltration blocked", () => {
 
 describe("tool-guard: source repo protection (bash)", () => {
   it("blocks chmod on ~/hornet/", () => {
-    assert.equal(checkBashCommand("chmod u+w /home/hornet_agent/hornet/start.sh").blocked, true);
+    assert.equal(checkBashCommand("chmod u+w /home/bentlegen/hornet/start.sh").blocked, true);
   });
   it("blocks chmod -R on ~/hornet/", () => {
-    assert.equal(checkBashCommand("chmod -R a+w /home/hornet_agent/hornet").blocked, true);
+    assert.equal(checkBashCommand("chmod -R a+w /home/bentlegen/hornet").blocked, true);
   });
   it("blocks chown on ~/hornet/", () => {
-    assert.equal(checkBashCommand("chown hornet_agent /home/hornet_agent/hornet/bin/security-audit.sh").blocked, true);
+    assert.equal(checkBashCommand("chown hornet_agent /home/bentlegen/hornet/bin/security-audit.sh").blocked, true);
   });
   it("blocks tee to ~/hornet/", () => {
-    assert.equal(checkBashCommand("tee /home/hornet_agent/hornet/bin/evil.sh").blocked, true);
+    assert.equal(checkBashCommand("tee /home/bentlegen/hornet/bin/evil.sh").blocked, true);
   });
   it("blocks chmod on runtime tool-guard", () => {
     assert.equal(checkBashCommand("chmod a+w /home/hornet_agent/.pi/agent/extensions/tool-guard.ts").blocked, true);
@@ -365,25 +365,25 @@ describe("tool-guard: workspace confinement (allow-list)", () => {
 
 describe("tool-guard: source repo is fully read-only (write/edit)", () => {
   it("blocks write to ANY file in ~/hornet/", () => {
-    assert.equal(checkWritePath("/home/hornet_agent/hornet/README.md"), true);
+    assert.equal(checkWritePath("/home/bentlegen/hornet/README.md"), true);
   });
   it("blocks write to ~/hornet/pi/extensions/auto-name.ts", () => {
-    assert.equal(checkWritePath("/home/hornet_agent/hornet/pi/extensions/auto-name.ts"), true);
+    assert.equal(checkWritePath("/home/bentlegen/hornet/pi/extensions/auto-name.ts"), true);
   });
   it("blocks write to ~/hornet/pi/skills/new-skill/SKILL.md", () => {
-    assert.equal(checkWritePath("/home/hornet_agent/hornet/pi/skills/new-skill/SKILL.md"), true);
+    assert.equal(checkWritePath("/home/bentlegen/hornet/pi/skills/new-skill/SKILL.md"), true);
   });
   it("blocks write to ~/hornet/bin/security-audit.sh", () => {
-    assert.equal(checkWritePath("/home/hornet_agent/hornet/bin/security-audit.sh"), true);
+    assert.equal(checkWritePath("/home/bentlegen/hornet/bin/security-audit.sh"), true);
   });
   it("blocks write to ~/hornet/setup.sh", () => {
-    assert.equal(checkWritePath("/home/hornet_agent/hornet/setup.sh"), true);
+    assert.equal(checkWritePath("/home/bentlegen/hornet/setup.sh"), true);
   });
   it("blocks write to ~/hornet/.git/hooks/pre-commit", () => {
-    assert.equal(checkWritePath("/home/hornet_agent/hornet/.git/hooks/pre-commit"), true);
+    assert.equal(checkWritePath("/home/bentlegen/hornet/.git/hooks/pre-commit"), true);
   });
   it("blocks write to ~/hornet/slack-bridge/bridge.mjs", () => {
-    assert.equal(checkWritePath("/home/hornet_agent/hornet/slack-bridge/bridge.mjs"), true);
+    assert.equal(checkWritePath("/home/bentlegen/hornet/slack-bridge/bridge.mjs"), true);
   });
 });
 

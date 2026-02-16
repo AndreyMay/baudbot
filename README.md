@@ -59,9 +59,8 @@ Hornet was partly inspired by [OpenClaw](https://github.com/openclaw/openclaw)'s
 ## Architecture
 
 ```
-hornet_agent (unprivileged uid)
-│
-├── ~/hornet/                    ← this repo
+admin_user
+├── ~/hornet/                    ← this repo (admin-owned, agent can't write)
 │   ├── bin/                     ← 🔒 security scripts (all root-protected)
 │   │   ├── security-audit.sh         24-check security audit
 │   │   ├── setup-firewall.sh         iptables per-UID lockdown
@@ -80,7 +79,11 @@ hornet_agent (unprivileged uid)
 │   │   └── security.mjs        ← 🔒 content wrapping, rate limiting, auth
 │   ├── setup.sh                 ← 🔒 system setup (creates user, firewall, etc.)
 │   └── SECURITY.md              ← 🔒 threat model
-│
+
+hornet_agent (unprivileged uid)
+├── ~/runtime/slack-bridge/           deployed bridge (from source)
+├── ~/.pi/agent/extensions/           deployed extensions (from source)
+├── ~/.pi/agent/skills/               agent-owned operational knowledge
 ├── ~/workspace/                      project repos + git worktrees
 └── ~/.config/.env                    secrets (600 perms, not in repo)
 ```
@@ -90,17 +93,17 @@ hornet_agent (unprivileged uid)
 ## Quick Start
 
 ```bash
-# Clone
-sudo su - hornet_agent -c 'git clone git@github.com:modem-dev/hornet.git ~/hornet'
+# Clone (as admin user — source repo lives outside hornet_agent's home)
+git clone git@github.com:modem-dev/hornet.git ~/hornet
 
 # Setup (creates user, firewall, permissions — run as root)
-sudo bash /home/hornet_agent/hornet/setup.sh <admin_username>
+sudo bash ~/hornet/setup.sh <admin_username>
 
 # Add secrets
 sudo su - hornet_agent -c 'vim ~/.config/.env'
 
 # Launch
-sudo -u hornet_agent /home/hornet_agent/hornet/start.sh
+sudo -u hornet_agent ~/hornet/start.sh
 ```
 
 ## Configuration
@@ -143,17 +146,18 @@ sudo -u hornet_agent tmux attach -t dev-agent    # Ctrl+b d to detach
 sudo -u hornet_agent pkill -u hornet_agent
 
 # Restart
-sudo -u hornet_agent /home/hornet_agent/hornet/start.sh
+sudo -u hornet_agent ~/hornet/start.sh
 ```
 
 ## Tests
 
 ```bash
-# All 202 tests
+# All tests (HORNET_SRC points to the admin-owned source repo)
+HORNET_SRC=~/hornet
 sudo -u hornet_agent bash -c "export PATH=~/opt/node-v22.14.0-linux-x64/bin:\$PATH && \
-  cd ~/hornet/slack-bridge && node --test security.test.mjs && \
-  cd ~/hornet/pi/extensions && node --test tool-guard.test.mjs && \
-  cd ~/hornet/bin && node --test scan-extensions.test.mjs && \
+  cd $HORNET_SRC/slack-bridge && node --test security.test.mjs && \
+  cd $HORNET_SRC/pi/extensions && node --test tool-guard.test.mjs && \
+  cd $HORNET_SRC/bin && node --test scan-extensions.test.mjs && \
   bash hornet-safe-bash.test.sh && bash redact-logs.test.sh && bash security-audit.test.sh"
 ```
 

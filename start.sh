@@ -1,14 +1,14 @@
 #!/bin/bash
 # Hornet Agent Launcher
-# Run as: sudo -u hornet_agent /home/hornet_agent/hornet/start.sh
+# Run as: sudo -u hornet_agent ~/runtime/start.sh
 #
-# Architecture: ~/hornet/ is the read-only source repo (admin-managed).
-# The agent runs from deployed copies:
+# The agent runs entirely from deployed copies — no source repo access needed:
 #   ~/.pi/agent/extensions/  ← pi extensions
 #   ~/.pi/agent/skills/      ← operational skills
 #   ~/runtime/slack-bridge/  ← bridge process
+#   ~/runtime/bin/           ← utility scripts
 #
-# To update runtime files, admin edits ~/hornet/ and runs bin/deploy.sh.
+# To update, admin edits source and runs deploy.sh.
 
 set -euo pipefail
 cd ~
@@ -23,10 +23,10 @@ set +a
 
 # Harden file permissions (pi defaults are too permissive)
 umask 077
-~/hornet/bin/harden-permissions.sh
+~/runtime/bin/harden-permissions.sh
 
 # Redact any secrets that leaked into session logs
-~/hornet/bin/redact-logs.sh 2>/dev/null || true
+~/runtime/bin/redact-logs.sh 2>/dev/null || true
 
 # Set session name (read by auto-name.ts extension)
 export PI_SESSION_NAME="control-agent"

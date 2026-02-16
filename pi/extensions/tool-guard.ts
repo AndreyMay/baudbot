@@ -155,24 +155,24 @@ const BASH_DENY_RULES: DenyRule[] = [
   },
 
   // ── Source repo protection ─────────────────────────────────────────────
-  // Block chmod/chown on ~/hornet/ to prevent undoing read-only permissions
+  // Block chmod/chown on the hornet source repo (admin-owned)
   {
     id: "chmod-hornet-source",
-    pattern: /chmod\b.*\/home\/hornet_agent\/hornet/,
-    label: "chmod on read-only source repo ~/hornet/",
+    pattern: /chmod\b.*\/home\/bentlegen\/hornet/,
+    label: "chmod on source repo ~/hornet/",
     severity: "block",
   },
   {
     id: "chown-hornet-source",
-    pattern: /chown\b.*\/home\/hornet_agent\/hornet/,
-    label: "chown on read-only source repo ~/hornet/",
+    pattern: /chown\b.*\/home\/bentlegen\/hornet/,
+    label: "chown on source repo ~/hornet/",
     severity: "block",
   },
   // Block tee/redirect writes to source repo
   {
     id: "tee-hornet-source",
-    pattern: /tee\s+.*\/home\/hornet_agent\/hornet\//,
-    label: "tee write to read-only source repo ~/hornet/",
+    pattern: /tee\s+.*\/home\/bentlegen\/hornet\//,
+    label: "tee write to source repo ~/hornet/",
     severity: "block",
   },
   // Block chmod/chown on protected runtime security files
@@ -229,12 +229,11 @@ function isAllowedWritePath(filePath: string): boolean {
 }
 
 // ── Read-only source repo ───────────────────────────────────────────────────
-// ~/hornet/ is the admin-managed infra source. The entire directory is read-only
-// to the agent (permissions removed). The agent runs from deployed copies in
-// ~/.pi/agent/extensions/, ~/.pi/agent/skills/, and ~/runtime/slack-bridge/.
-// This tool-guard blocks write/edit to the source repo AND chmod/chown that
-// could undo the read-only permissions.
-const HORNET_DIR = "/home/hornet_agent/hornet";
+// The hornet source repo is admin-owned (outside hornet_agent's home).
+// The agent runs from deployed copies in ~/.pi/agent/extensions/,
+// ~/.pi/agent/skills/, and ~/runtime/slack-bridge/.
+// This tool-guard blocks write/edit to the source repo AND chmod/chown.
+const HORNET_DIR = "/home/bentlegen/hornet";
 
 // ── Protected runtime paths ─────────────────────────────────────────────────
 // Security-critical files deployed to the agent's runtime directories.
