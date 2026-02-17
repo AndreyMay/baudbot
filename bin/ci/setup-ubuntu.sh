@@ -46,6 +46,11 @@ test -d /home/baudbot_agent/.pi/agent/extensions
 grep -q "ANTHROPIC_API_KEY=sk-ant-testkey" /home/baudbot_agent/.config/.env
 grep -q "SLACK_BOT_TOKEN=xoxb-test" /home/baudbot_agent/.config/.env
 grep -q "BAUDBOT_SOURCE_DIR=" /home/baudbot_agent/.config/.env
+# CLI installed
+test -L /usr/local/bin/baudbot
+baudbot --version
+HELP_OUT=$(baudbot --help)
+echo "$HELP_OUT" | grep -q "baudbot"
 echo "  ✓ install.sh verification passed"
 
 echo "=== Installing test dependencies ==="
