@@ -48,6 +48,8 @@ usage() {
   echo "  restart        Restart the agent"
   echo "  status         Show agent status"
   echo "  logs           Tail agent logs"
+  echo "  attach         Attach to a tmux session (default: first available)"
+  echo "  sessions       List agent tmux and pi sessions"
   echo ""
   echo -e "${BOLD}Setup:${RESET}"
   echo "  setup          One-time system setup (user, deps, firewall, systemd)"
@@ -142,6 +144,85 @@ case "${1:-}" in
       echo "No systemd unit. Check tmux sessions:"
       echo "  sudo -u baudbot_agent tmux ls"
     fi
+    ;;
+
+  sessions)
+    shift
+    require_root "sessions"
+    AGENT_USER="baudbot_agent"
+    echo -e "${BOLD}tmux sessions:${RESET}"
+    if sudo -u "$AGENT_USER" tmux ls 2>/dev/null; then
+      :
+    else
+      echo "  (none)"
+    fi
+    echo ""
+    echo -e "${BOLD}pi sessions:${RESET}"
+    # Pi stores live session control sockets in ~/.pi/session-control/<uuid>.sock
+    # Named sessions have symlinks: <name>.sock → <uuid>.sock
+    PI_CONTROL_DIR="/home/$AGENT_USER/.pi/session-control"
+    if [ -d "$PI_CONTROL_DIR" ]; then
+      found=0
+      # Collect alias symlinks: name → uuid
+      declare -A ALIASES
+      for sock in "$PI_CONTROL_DIR"/*.sock; do
+        [ -e "$sock" ] || continue
+        base=$(basename "$sock" .sock)
+        if [ -L "$sock" ]; then
+          # Symlink = alias. Resolve target to get the uuid.
+          target=$(readlink "$sock")
+          target_uuid=$(basename "$target" .sock)
+          ALIASES[$target_uuid]="$base"
+        fi
+      done
+      # List actual sockets (non-symlinks)
+      for sock in "$PI_CONTROL_DIR"/*.sock; do
+        [ -e "$sock" ] || continue
+        [ -L "$sock" ] && continue  # skip alias symlinks
+        sess_id=$(basename "$sock" .sock)
+        name="${ALIASES[$sess_id]:-}"
+        # Liveness check: try connecting to the socket
+        status="stopped (stale)"
+        if sudo -u "$AGENT_USER" bash -c "echo '' | socat - UNIX-CONNECT:'$sock' 2>/dev/null" 2>/dev/null; then
+          status="running"
+        elif sudo -u "$AGENT_USER" bash -c "python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(0.3); s.connect('$sock'); s.close()\" 2>/dev/null" 2>/dev/null; then
+          status="running"
+        fi
+        if [ -n "$name" ]; then
+          echo "  $name ($sess_id) [$status]"
+        else
+          echo "  $sess_id [$status]"
+        fi
+        found=$((found + 1))
+      done
+      if [ "$found" -eq 0 ]; then
+        echo "  (none)"
+      fi
+    else
+      echo "  (no session-control directory)"
+    fi
+    ;;
+
+  attach)
+    shift
+    require_root "attach"
+    AGENT_USER="baudbot_agent"
+    TARGET="${1:-}"
+    if [ -z "$TARGET" ]; then
+      # Default: attach to first available tmux session
+      FIRST_SESSION=$(sudo -u "$AGENT_USER" tmux ls -F '#{session_name}' 2>/dev/null | head -1)
+      if [ -n "$FIRST_SESSION" ]; then
+        TARGET="$FIRST_SESSION"
+      else
+        echo "No tmux sessions running. Start the agent first:"
+        echo "  sudo baudbot start"
+        exit 1
+      fi
+    fi
+    echo "Attaching to tmux session: $TARGET"
+    echo "Detach with: Ctrl+b, d"
+    echo ""
+    exec sudo -u "$AGENT_USER" tmux attach-session -t "$TARGET"
     ;;
 
   setup)
