@@ -14,9 +14,9 @@ import { execFileSync } from "node:child_process";
 const SCANNER = join(import.meta.dirname, "../bin/scan-extensions.mjs");
 const NODE = process.execPath;
 
-function runScanner(dir) {
+function runScanner(dir, extraArgs = []) {
   try {
-    const output = execFileSync(NODE, [SCANNER, dir], {
+    const output = execFileSync(NODE, [SCANNER, ...extraArgs, dir], {
       encoding: "utf-8",
       timeout: 10_000,
     });
@@ -207,6 +207,127 @@ describe("scan-extensions: reports line numbers", () => {
       ].join("\n"));
       const { output } = runScanner(dir);
       assert.ok(output.includes("lined.ts:4"), `expected line 4, got:\n${output}`);
+    });
+  });
+});
+
+describe("scan-extensions: new rules", () => {
+  it("detects filesystem writes to system paths", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "bad.ts"), `
+        import { writeFileSync } from "node:fs";
+        writeFileSync("/etc/passwd", "evil");
+      `);
+      const { output, exitCode } = runScanner(dir);
+      assert.equal(exitCode, 2);
+      assert.ok(output.includes("system path"), output);
+    });
+  });
+
+  it("detects privilege escalation with child_process", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "bad.ts"), `
+        import { execSync } from "node:child_process";
+        execSync("sudo rm -rf /");
+      `);
+      const { output, exitCode } = runScanner(dir);
+      assert.equal(exitCode, 2);
+      // Should detect either privilege-escalation or dangerous-exec
+      assert.ok(output.includes("CRITICAL"), output);
+    });
+  });
+
+  it("does not flag sudo without child_process context", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "ok.ts"), `
+        // Documentation: run sudo to install
+        const help = "Use sudo apt install nodejs";
+      `);
+      const { exitCode } = runScanner(dir);
+      assert.equal(exitCode, 0);
+    });
+  });
+
+  it("detects network listeners with http context", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "backdoor.ts"), `
+        import http from "node:http";
+        const server = http.createServer((req, res) => {
+          res.end("backdoor");
+        });
+        server.listen(9999);
+      `);
+      const { output, exitCode } = runScanner(dir);
+      assert.ok(exitCode > 0, `expected non-zero exit, got ${exitCode}`);
+      assert.ok(output.includes("listener") || output.includes("backdoor") || output.includes("Network"), output);
+    });
+  });
+
+  it("detects prototype pollution patterns", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "bad.js"), `
+        const obj = {};
+        obj.__proto__.isAdmin = true;
+      `);
+      const { output, exitCode } = runScanner(dir);
+      assert.ok(exitCode > 0);
+      assert.ok(output.includes("prototype") || output.includes("pollution"), output);
+    });
+  });
+
+  it("detects credential logging (same line)", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "bad.ts"), `
+        console.log(process.env.SECRET_KEY);
+      `);
+      const { output, exitCode } = runScanner(dir);
+      assert.ok(exitCode > 0);
+      assert.ok(output.includes("credential") || output.includes("logging"), output);
+    });
+  });
+
+  it("detects credential logging (multiline console.log with process.env)", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "bad.ts"), `
+        console.log(
+          "token:",
+          process.env.SECRET_TOKEN
+        );
+      `);
+      const { output, exitCode } = runScanner(dir);
+      assert.ok(exitCode > 0);
+      assert.ok(output.includes("credential") || output.includes("logging"), output);
+    });
+  });
+
+  it("detects unsafe deserialization", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "bad.ts"), `
+        const data = JSON.parse(req.body);
+      `);
+      const { output, exitCode } = runScanner(dir);
+      assert.ok(exitCode > 0);
+      assert.ok(output.includes("deserialization") || output.includes("Unsafe"), output);
+    });
+  });
+
+  it("detects dynamic require", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "bad.js"), `
+        const mod = require(userInput);
+      `);
+      const { output, exitCode } = runScanner(dir);
+      // info severity = exit 0, but should appear in output
+      assert.ok(output.includes("dynamic") || output.includes("Dynamic") || output.includes("require"), output);
+    });
+  });
+
+  it("detects template literal fs write to system path", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "bad.ts"), "import { writeFileSync } from 'node:fs';\nwriteFileSync(`/etc/shadow`, data);");
+      const { output, exitCode } = runScanner(dir);
+      assert.equal(exitCode, 2);
+      assert.ok(output.includes("system path"), output);
     });
   });
 });

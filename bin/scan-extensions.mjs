@@ -9,6 +9,9 @@
  * - Credential harvesting (process.env + network send)
  * - Obfuscated code (hex sequences, large base64)
  * - Crypto-mining references
+ * - Filesystem writes outside agent home
+ * - Privilege escalation patterns
+ * - Network listeners (potential backdoors)
  *
  * Ported from OpenClaw's skill-scanner.ts.
  *
@@ -55,6 +58,38 @@ const LINE_RULES = [
     message: "WebSocket connection to non-standard port",
     pattern: /new\s+WebSocket\s*\(\s*["']wss?:\/\/[^"']*:(\d+)/,
   },
+  {
+    id: "fs-write-outside-home",
+    severity: "critical",
+    message: "Filesystem write to system path detected",
+    pattern: /writeFileSync?\s*\(\s*["'`](\/etc\/|\/usr\/|\/var\/|\/root\/)/,
+  },
+  {
+    id: "privilege-escalation",
+    severity: "critical",
+    message: "Privilege escalation pattern detected (sudo/chmod/chown)",
+    pattern: /\bsudo\b|chmod\s+[0-7]{3,4}\s+\/|chown\s+root/,
+    requiresContext: /child_process|execSync|spawn/,
+  },
+  {
+    id: "network-listener",
+    severity: "warn",
+    message: "Network server/listener detected (potential backdoor)",
+    pattern: /\.listen\s*\(\s*\d+|createServer\s*\(/,
+    requiresContext: /\bnet\b|\bhttp\b|\bhttps\b|\bexpress\b/,
+  },
+  {
+    id: "prototype-pollution",
+    severity: "warn",
+    message: "Potential prototype pollution pattern",
+    pattern: /__proto__|Object\.setPrototypeOf|constructor\s*\[/,
+  },
+  {
+    id: "unsafe-deserialization",
+    severity: "warn",
+    message: "Unsafe deserialization (JSON.parse on external input without validation)",
+    pattern: /JSON\.parse\s*\(\s*(req\.|request\.|body|input|external|untrusted)/,
+  },
 ];
 
 const STANDARD_PORTS = new Set([80, 443, 8080, 8443, 3000]);
@@ -86,6 +121,20 @@ const SOURCE_RULES = [
     message: "Environment variable access combined with network send — possible credential harvesting",
     pattern: /process\.env/,
     requiresContext: /\bfetch\b|\bpost\b|http\.request/i,
+  },
+  {
+    id: "credential-logging",
+    severity: "warn",
+    message: "Possible credential logging (process.env written to log/console)",
+    pattern: /process\.env/,
+    // Uses [\s\S]*? to match across newlines in full-source context check
+    requiresContext: /console\.(log|info|warn|error|debug)\s*\([\s\S]*?process\.env/,
+  },
+  {
+    id: "dynamic-require",
+    severity: "info",
+    message: "Dynamic require/import — may load untrusted modules",
+    pattern: /require\s*\(\s*[^"'`]|import\s*\(\s*[^"'`]/,
   },
 ];
 
@@ -273,12 +322,15 @@ async function main() {
     }
   }
 
+  const totalInfo = allFindings.filter((f) => f.severity === "info").length;
+
   console.log("");
   console.log("Summary");
   console.log("───────");
   console.log(`  Files scanned: ${totalScanned}`);
   console.log(`  ❌ Critical:   ${totalCritical}`);
   console.log(`  ⚠️  Warn:       ${totalWarn}`);
+  if (totalInfo > 0) console.log(`  ℹ️  Info:       ${totalInfo}`);
   console.log("");
 
   if (totalCritical > 0) {
@@ -288,7 +340,8 @@ async function main() {
     console.log(`⚠️  ${totalWarn} warning(s) — review recommended.`);
     process.exit(1);
   } else {
-    console.log("✅ All clean.");
+    if (totalInfo > 0) console.log(`ℹ️  ${totalInfo} info finding(s) — no action required.`);
+    else console.log("✅ All clean.");
     process.exit(0);
   }
 }
