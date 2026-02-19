@@ -53,11 +53,9 @@ Baudbot is designed as shared engineering infrastructure, not a single-user desk
 ## Quick Start
 
 ```bash
-git clone https://github.com/modem-dev/baudbot.git ~/baudbot
-sudo ~/baudbot/install.sh
+curl -fsSL https://raw.githubusercontent.com/modem-dev/baudbot/main/bootstrap.sh | bash
+baudbot install
 ```
-
-Installer handles setup, dependencies, agent user creation, firewall setup, and initial configuration prompts.
 
 After install:
 
