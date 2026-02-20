@@ -39,8 +39,17 @@ test("parseArgs parses long-form options", () => {
     brokerUrl: "https://broker.example.com/",
     workspaceId: "T123ABC",
     authCode: "secret-code",
+    verbose: false,
     help: false,
   });
+});
+
+test("parseArgs sets verbose=true for -v and --verbose", () => {
+  const short = parseArgs(["-v"]);
+  assert.equal(short.verbose, true);
+
+  const long = parseArgs(["--verbose"]);
+  assert.equal(long.verbose, true);
 });
 
 test("parseArgs rejects unknown arguments", () => {
