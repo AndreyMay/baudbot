@@ -71,8 +71,7 @@ for (const key of [
 
 const ALLOWED_USERS = parseAllowedUsers(process.env.SLACK_ALLOWED_USERS);
 if (ALLOWED_USERS.length === 0) {
-  logError("❌ SLACK_ALLOWED_USERS is empty — refusing to start with open access.");
-  process.exit(1);
+  logWarn("⚠️  SLACK_ALLOWED_USERS not set — all workspace members can interact");
 }
 
 const slackRateLimiter = createRateLimiter({ maxRequests: 5, windowMs: 60_000 });
@@ -828,7 +827,7 @@ async function startPollLoop() {
   logInfo(`   broker: ${brokerBaseUrl}`);
   logInfo(`   workspace: ${workspaceId}`);
   logInfo(`   poll interval: ${POLL_INTERVAL_MS}ms, max messages: ${MAX_MESSAGES}`);
-  logInfo(`   allowed users: ${ALLOWED_USERS.length}`);
+  logInfo(`   allowed users: ${ALLOWED_USERS.length || "all"}`);
   logInfo(`   pi socket: ${socketPath || "(not found — will retry on message)"}`);
   await startPollLoop();
 })();

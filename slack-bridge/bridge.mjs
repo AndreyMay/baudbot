@@ -8,7 +8,7 @@
  * Required env vars:
  *   SLACK_BOT_TOKEN        - Slack bot OAuth token
  *   SLACK_APP_TOKEN        - Slack app-level token (for Socket Mode)
- *   SLACK_ALLOWED_USERS    - comma-separated Slack user IDs (REQUIRED, fail-closed)
+ *   SLACK_ALLOWED_USERS    - comma-separated Slack user IDs (optional — allow all if unset)
  *
  * Optional:
  *   PI_SESSION_ID          - target pi session ID (defaults to auto-detect control-agent)
@@ -51,17 +51,15 @@ for (const key of ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]) {
   }
 }
 
-// ── Access Control (fail-closed) ────────────────────────────────────────────
+// ── Access Control ───────────────────────────────────────────────────────────
 
 const ALLOWED_USERS = parseAllowedUsers(process.env.SLACK_ALLOWED_USERS);
 
 if (ALLOWED_USERS.length === 0) {
-  console.error("❌ SLACK_ALLOWED_USERS is empty — refusing to start with open access.");
-  console.error("   Set at least one Slack user ID (comma-separated).");
-  process.exit(1);
+  console.warn("⚠️  SLACK_ALLOWED_USERS not set — all workspace members can interact");
 }
 
-console.log(`🔒 Access control: ${ALLOWED_USERS.length} allowed user(s)`);
+console.log(`🔒 Access control: ${ALLOWED_USERS.length || 'all'} allowed user(s)`);
 
 // ── Rate Limiting ───────────────────────────────────────────────────────────
 
