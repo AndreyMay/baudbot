@@ -16,6 +16,10 @@ cd ~
 # Set PATH
 export PATH="$HOME/.varlock/bin:$HOME/opt/node-v22.14.0-linux-x64/bin:$PATH"
 
+# Work around varlock telemetry config crash by opting out at runtime.
+# This avoids loading anonymousId from user config and keeps startup deterministic.
+export VARLOCK_TELEMETRY_DISABLED=1
+
 # Validate and load secrets via varlock
 varlock load --path ~/.config/ || {
   echo "❌ Environment validation failed — check ~/.config/.env against .env.schema"
