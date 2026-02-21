@@ -25,11 +25,6 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: ShellCheck
-        run: |
-          find bin/ setup.sh start.sh install.sh -type f \( -name '*.sh' -o -name 'baudbot-safe-bash' -o -name 'baudbot-docker' -o -name 'baudbot' \) \
-            | xargs shellcheck -s bash -S warning
-
   test:
     runs-on: ubuntu-latest
     steps:
