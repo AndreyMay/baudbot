@@ -23,6 +23,12 @@ import {
   validateReactParams,
   createRateLimiter,
 } from "./security.mjs";
+import {
+  stableStringify,
+  canonicalizeEnvelope,
+  canonicalizeOutbound,
+  canonicalizeSendRequest,
+} from "./crypto.mjs";
 
 const SOCKET_DIR = path.join(homedir(), ".pi", "session-control");
 const AGENT_TIMEOUT_MS = 120_000;
@@ -107,13 +113,8 @@ function utf8String(bytes) {
   return new TextDecoder().decode(bytes);
 }
 
-function canonicalizeEnvelope(workspace, timestamp, encrypted) {
-  return utf8Bytes(`${workspace}|${timestamp}|${encrypted}`);
-}
-
-function canonicalizeOutbound(workspace, action, timestamp, encryptedBody) {
-  return utf8Bytes(`${workspace}|${action}|${timestamp}|${encryptedBody}`);
-}
+// canonicalizeEnvelope, canonicalizeOutbound, canonicalizeSendRequest,
+// and stableStringify are imported from ./crypto.mjs
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -322,14 +323,22 @@ async function sendViaBroker({ action, routing, body }) {
   );
 
   const encryptedBody = toBase64(ciphertext);
-  const signature = signRequest(action, timestamp, encryptedBody);
+  const nonceB64 = toBase64(nonce);
+
+  // Sign over full send payload (routing + nonce) to match broker's
+  // canonicalizeSendRequest() from modem-dev/baudbot-services#12.
+  const canonical = canonicalizeSendRequest(
+    workspaceId, action, timestamp, encryptedBody, nonceB64, routing,
+  );
+  const sig = sodium.crypto_sign_detached(canonical, cryptoState.serverSignSecretKey);
+  const signature = toBase64(sig);
 
   return brokerFetch("/api/send", {
     workspace_id: workspaceId,
     action,
     routing,
     encrypted_body: encryptedBody,
-    nonce: toBase64(nonce),
+    nonce: nonceB64,
     timestamp,
     signature,
   });
@@ -692,7 +701,7 @@ function startApiServer() {
         } else {
           await sendViaBroker({
             action: "reactions.add",
-            routing: { channel, timestamp: threadTs, emoji },
+            routing: { channel, timestamp, emoji },
             body: { emoji },
           });
         }
