@@ -10,6 +10,7 @@ import {
   stableStringify,
   canonicalizeEnvelope,
   canonicalizeOutbound,
+  canonicalizeProtocolRequest,
   canonicalizeSendRequest,
 } from "./crypto.mjs";
 
@@ -147,6 +148,30 @@ describe("canonicalizeOutbound", () => {
 
   it("returns Uint8Array", () => {
     const result = canonicalizeOutbound("T123", "inbox.pull", 1700000000, "10");
+    assert.ok(result instanceof Uint8Array);
+  });
+});
+
+// ── canonicalizeProtocolRequest ─────────────────────────────────────────────
+
+describe("canonicalizeProtocolRequest", () => {
+  it("produces stable JSON payload for protocol-versioned inbox.pull", () => {
+    const result = decode(
+      canonicalizeProtocolRequest("T123", "2026-02-1", "inbox.pull", 1700000000, {
+        max_messages: 10,
+        wait_seconds: 20,
+      }),
+    );
+    assert.equal(
+      result,
+      '{"action":"inbox.pull","payload":{"max_messages":10,"wait_seconds":20},"protocol_version":"2026-02-1","timestamp":1700000000,"workspace_id":"T123"}',
+    );
+  });
+
+  it("returns Uint8Array", () => {
+    const result = canonicalizeProtocolRequest("T123", "2026-02-1", "inbox.ack", 1700000000, {
+      message_ids: ["m1", "m2"],
+    });
     assert.ok(result instanceof Uint8Array);
   });
 });

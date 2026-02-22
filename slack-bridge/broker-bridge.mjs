@@ -24,17 +24,32 @@ import {
 } from "./security.mjs";
 import {
   canonicalizeEnvelope,
-  canonicalizeOutbound,
+  canonicalizeProtocolRequest,
   canonicalizeSendRequest,
 } from "./crypto.mjs";
 
 const SOCKET_DIR = path.join(homedir(), ".pi", "session-control");
 const AGENT_TIMEOUT_MS = 120_000;
-const API_PORT = parseInt(process.env.BRIDGE_API_PORT || "7890", 10);
-const POLL_INTERVAL_MS = parseInt(process.env.SLACK_BROKER_POLL_INTERVAL_MS || "3000", 10);
-const MAX_MESSAGES = parseInt(process.env.SLACK_BROKER_MAX_MESSAGES || "10", 10);
-const DEDUPE_TTL_MS = parseInt(process.env.SLACK_BROKER_DEDUPE_TTL_MS || String(20 * 60 * 1000), 10);
+
+function clampInt(value, min, max, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+const API_PORT = clampInt(process.env.BRIDGE_API_PORT || "7890", 0, 65535, 7890);
+const POLL_INTERVAL_MS = clampInt(process.env.SLACK_BROKER_POLL_INTERVAL_MS || "3000", 0, 60_000, 3000);
+const MAX_MESSAGES = clampInt(process.env.SLACK_BROKER_MAX_MESSAGES || "10", 1, 100, 10);
+const MAX_WAIT_SECONDS = 25;
+const BROKER_WAIT_SECONDS = clampInt(process.env.SLACK_BROKER_WAIT_SECONDS || "20", 0, MAX_WAIT_SECONDS, 20);
+const DEDUPE_TTL_MS = clampInt(
+  process.env.SLACK_BROKER_DEDUPE_TTL_MS || String(20 * 60 * 1000),
+  1_000,
+  7 * 24 * 60 * 60 * 1000,
+  20 * 60 * 1000,
+);
 const MAX_BACKOFF_MS = 30_000;
+const INBOX_PROTOCOL_VERSION = "2026-02-1";
 const BROKER_HEALTH_PATH = path.join(homedir(), ".pi", "agent", "broker-health.json");
 
 function ts() {
@@ -351,10 +366,23 @@ function getThreadId(channel, threadTs) {
   return id;
 }
 
-function signRequest(action, timestamp, payloadField) {
-  const canonical = canonicalizeOutbound(workspaceId, action, timestamp, payloadField);
+function signProtocolRequest(action, timestamp, payload) {
+  const canonical = canonicalizeProtocolRequest(
+    workspaceId,
+    INBOX_PROTOCOL_VERSION,
+    action,
+    timestamp,
+    payload,
+  );
   const sig = sodium.crypto_sign_detached(canonical, cryptoState.serverSignSecretKey);
   return toBase64(sig);
+}
+
+function signPullRequest(timestamp, maxMessages, waitSeconds) {
+  return signProtocolRequest("inbox.pull", timestamp, {
+    max_messages: maxMessages,
+    wait_seconds: waitSeconds,
+  });
 }
 
 async function brokerFetch(pathname, body) {
@@ -389,14 +417,18 @@ async function brokerFetch(pathname, body) {
 
 async function pullInbox() {
   const timestamp = Math.floor(Date.now() / 1000);
-  const signature = signRequest("inbox.pull", timestamp, String(MAX_MESSAGES));
+  const signature = signPullRequest(timestamp, MAX_MESSAGES, BROKER_WAIT_SECONDS);
 
-  const payload = await brokerFetch("/api/inbox/pull", {
+  const body = {
     workspace_id: workspaceId,
+    protocol_version: INBOX_PROTOCOL_VERSION,
     max_messages: MAX_MESSAGES,
+    wait_seconds: BROKER_WAIT_SECONDS,
     timestamp,
     signature,
-  });
+  };
+
+  const payload = await brokerFetch("/api/inbox/pull", body);
 
   return Array.isArray(payload.messages) ? payload.messages : [];
 }
@@ -404,11 +436,11 @@ async function pullInbox() {
 async function ackInbox(messageIds) {
   if (messageIds.length === 0) return;
   const timestamp = Math.floor(Date.now() / 1000);
-  const joined = messageIds.join(",");
-  const signature = signRequest("inbox.ack", timestamp, joined);
+  const signature = signProtocolRequest("inbox.ack", timestamp, { message_ids: messageIds });
 
   await brokerFetch("/api/inbox/ack", {
     workspace_id: workspaceId,
+    protocol_version: INBOX_PROTOCOL_VERSION,
     message_ids: messageIds,
     timestamp,
     signature,
@@ -918,7 +950,9 @@ async function startPollLoop() {
       }
 
       backoffMs = POLL_INTERVAL_MS;
-      await sleep(POLL_INTERVAL_MS);
+      if (BROKER_WAIT_SECONDS <= 0) {
+        await sleep(POLL_INTERVAL_MS);
+      }
     } catch (err) {
       if (!pollSucceeded) {
         markHealth("poll", false, err);
@@ -960,7 +994,11 @@ async function startPollLoop() {
   logInfo(`   outbound mode: ${outboundMode} ${outboundMode === "direct" ? "(using SLACK_BOT_TOKEN)" : "(via broker)"}`);
   logInfo(`   broker: ${brokerBaseUrl}`);
   logInfo(`   workspace: ${workspaceId}`);
-  logInfo(`   poll interval: ${POLL_INTERVAL_MS}ms, max messages: ${MAX_MESSAGES}`);
+  logInfo(`   inbox protocol: ${INBOX_PROTOCOL_VERSION}`);
+  logInfo(
+    `   poll mode: ${BROKER_WAIT_SECONDS > 0 ? `long-poll (${BROKER_WAIT_SECONDS}s)` : "short-poll"}, ` +
+    `interval: ${POLL_INTERVAL_MS}ms, max messages: ${MAX_MESSAGES}`,
+  );
   logInfo(`   allowed users: ${ALLOWED_USERS.length || "all"}`);
   logInfo(`   pi socket: ${socketPath || "(not found — will retry on message)"}`);
   await startPollLoop();

@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import sodium from "libsodium-wrappers-sumo";
-import { canonicalizeEnvelope } from "../slack-bridge/crypto.mjs";
+import {
+  canonicalizeEnvelope,
+  canonicalizeProtocolRequest,
+} from "../slack-bridge/crypto.mjs";
 
 function b64(bytes = 32, fill = 1) {
   return Buffer.alloc(bytes, fill).toString("base64");
@@ -50,6 +53,8 @@ describe("broker pull bridge semi-integration", () => {
   });
 
   it("acks poison messages from broker to avoid infinite retry loops", async () => {
+    await sodium.ready;
+
     let pullCount = 0;
     let ackPayload = null;
 
@@ -158,7 +163,16 @@ describe("broker pull bridge semi-integration", () => {
     await Promise.race([ackWait, bridgeExited]);
 
     expect(ackPayload.workspace_id).toBe("T123BROKER");
+    expect(ackPayload.protocol_version).toBe("2026-02-1");
     expect(ackPayload.message_ids).toContain("m-poison-1");
+
+    const signKeypair = sodium.crypto_sign_seed_keypair(new Uint8Array(Buffer.alloc(32, 13)));
+    const canonical = canonicalizeProtocolRequest("T123BROKER", "2026-02-1", "inbox.ack", ackPayload.timestamp, {
+      message_ids: ackPayload.message_ids,
+    });
+    const sigBytes = new Uint8Array(Buffer.from(ackPayload.signature, "base64"));
+    const valid = sodium.crypto_sign_verify_detached(sigBytes, canonical, signKeypair.publicKey);
+    expect(valid).toBe(true);
   });
 
   it("forwards user messages to agent in fire-and-forget mode without get_message/turn_end RPCs", async () => {
@@ -346,5 +360,265 @@ describe("broker pull bridge semi-integration", () => {
 
     expect(sendPayloads.some((payload) => payload.action === "chat.postMessage")).toBe(false);
     expect(sendPayloads.some((payload) => payload.action === "reactions.add")).toBe(false);
+  });
+
+  it("uses protocol-versioned inbox.pull signatures with wait_seconds by default", async () => {
+    await sodium.ready;
+
+    const workspaceId = "T123BROKER";
+    const signingSeed = Buffer.alloc(32, 21);
+    const signKeypair = sodium.crypto_sign_seed_keypair(new Uint8Array(signingSeed));
+    let pullPayload = null;
+
+    const broker = createServer(async (req, res) => {
+      if (req.method === "POST" && req.url === "/api/inbox/pull") {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        pullPayload = JSON.parse(raw);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, messages: [] }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/inbox/ack") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, acked: 0 }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/send") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ts: "1234.5678" }));
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "not found" }));
+    });
+
+    await new Promise((resolve) => broker.listen(0, "127.0.0.1", resolve));
+    servers.push(broker);
+
+    const address = broker.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to get broker test server address");
+    }
+    const brokerUrl = `http://127.0.0.1:${address.port}`;
+
+    const testFileDir = path.dirname(fileURLToPath(import.meta.url));
+    const repoRoot = path.dirname(testFileDir);
+    const bridgePath = path.join(repoRoot, "slack-bridge", "broker-bridge.mjs");
+    const bridgeCwd = path.join(repoRoot, "slack-bridge");
+
+    const bridge = spawn("node", [bridgePath], {
+      cwd: bridgeCwd,
+      env: {
+        ...process.env,
+        SLACK_BROKER_URL: brokerUrl,
+        SLACK_BROKER_WORKSPACE_ID: workspaceId,
+        SLACK_BROKER_SERVER_PRIVATE_KEY: b64(32, 11),
+        SLACK_BROKER_SERVER_PUBLIC_KEY: b64(32, 12),
+        SLACK_BROKER_SERVER_SIGNING_PRIVATE_KEY: signingSeed.toString("base64"),
+        SLACK_BROKER_PUBLIC_KEY: b64(32, 14),
+        SLACK_BROKER_SIGNING_PUBLIC_KEY: b64(32, 15),
+        SLACK_ALLOWED_USERS: "U_ALLOWED",
+        SLACK_BROKER_POLL_INTERVAL_MS: "50",
+        BRIDGE_API_PORT: "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.push(bridge);
+
+    await waitFor(() => pullPayload !== null, 10_000, 50, "timeout waiting for inbox pull request");
+
+    expect(pullPayload.workspace_id).toBe(workspaceId);
+    expect(pullPayload.protocol_version).toBe("2026-02-1");
+    expect(pullPayload.max_messages).toBe(10);
+    expect(pullPayload.wait_seconds).toBe(20);
+
+    const canonical = canonicalizeProtocolRequest(workspaceId, "2026-02-1", "inbox.pull", pullPayload.timestamp, {
+      max_messages: 10,
+      wait_seconds: 20,
+    });
+    const sigBytes = new Uint8Array(Buffer.from(pullPayload.signature, "base64"));
+    const valid = sodium.crypto_sign_verify_detached(sigBytes, canonical, signKeypair.publicKey);
+    expect(valid).toBe(true);
+
+    bridge.kill("SIGTERM");
+  });
+
+  it("uses protocol-versioned inbox.pull signature with wait_seconds=0", async () => {
+    await sodium.ready;
+
+    const workspaceId = "T123BROKER";
+    const signingSeed = Buffer.alloc(32, 22);
+    const signKeypair = sodium.crypto_sign_seed_keypair(new Uint8Array(signingSeed));
+    let pullPayload = null;
+
+    const broker = createServer(async (req, res) => {
+      if (req.method === "POST" && req.url === "/api/inbox/pull") {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        pullPayload = JSON.parse(raw);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, messages: [] }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/inbox/ack") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, acked: 0 }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/send") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ts: "1234.5678" }));
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "not found" }));
+    });
+
+    await new Promise((resolve) => broker.listen(0, "127.0.0.1", resolve));
+    servers.push(broker);
+
+    const address = broker.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to get broker test server address");
+    }
+    const brokerUrl = `http://127.0.0.1:${address.port}`;
+
+    const testFileDir = path.dirname(fileURLToPath(import.meta.url));
+    const repoRoot = path.dirname(testFileDir);
+    const bridgePath = path.join(repoRoot, "slack-bridge", "broker-bridge.mjs");
+    const bridgeCwd = path.join(repoRoot, "slack-bridge");
+
+    const bridge = spawn("node", [bridgePath], {
+      cwd: bridgeCwd,
+      env: {
+        ...process.env,
+        SLACK_BROKER_URL: brokerUrl,
+        SLACK_BROKER_WORKSPACE_ID: workspaceId,
+        SLACK_BROKER_SERVER_PRIVATE_KEY: b64(32, 11),
+        SLACK_BROKER_SERVER_PUBLIC_KEY: b64(32, 12),
+        SLACK_BROKER_SERVER_SIGNING_PRIVATE_KEY: signingSeed.toString("base64"),
+        SLACK_BROKER_PUBLIC_KEY: b64(32, 14),
+        SLACK_BROKER_SIGNING_PUBLIC_KEY: b64(32, 15),
+        SLACK_ALLOWED_USERS: "U_ALLOWED",
+        SLACK_BROKER_POLL_INTERVAL_MS: "50",
+        SLACK_BROKER_WAIT_SECONDS: "0",
+        BRIDGE_API_PORT: "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.push(bridge);
+
+    await waitFor(() => pullPayload !== null, 10_000, 50, "timeout waiting for protocol inbox pull request");
+
+    expect(pullPayload.workspace_id).toBe(workspaceId);
+    expect(pullPayload.protocol_version).toBe("2026-02-1");
+    expect(pullPayload.max_messages).toBe(10);
+    expect(pullPayload.wait_seconds).toBe(0);
+
+    const canonical = canonicalizeProtocolRequest(workspaceId, "2026-02-1", "inbox.pull", pullPayload.timestamp, {
+      max_messages: 10,
+      wait_seconds: 0,
+    });
+    const sigBytes = new Uint8Array(Buffer.from(pullPayload.signature, "base64"));
+    const valid = sodium.crypto_sign_verify_detached(sigBytes, canonical, signKeypair.publicKey);
+    expect(valid).toBe(true);
+
+    bridge.kill("SIGTERM");
+  });
+
+  it("clamps max_messages before signing pull requests", async () => {
+    await sodium.ready;
+
+    const workspaceId = "T123BROKER";
+    const signingSeed = Buffer.alloc(32, 23);
+    const signKeypair = sodium.crypto_sign_seed_keypair(new Uint8Array(signingSeed));
+    let pullPayload = null;
+
+    const broker = createServer(async (req, res) => {
+      if (req.method === "POST" && req.url === "/api/inbox/pull") {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        pullPayload = JSON.parse(raw);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, messages: [] }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/inbox/ack") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, acked: 0 }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/send") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ts: "1234.5678" }));
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "not found" }));
+    });
+
+    await new Promise((resolve) => broker.listen(0, "127.0.0.1", resolve));
+    servers.push(broker);
+
+    const address = broker.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to get broker test server address");
+    }
+    const brokerUrl = `http://127.0.0.1:${address.port}`;
+
+    const testFileDir = path.dirname(fileURLToPath(import.meta.url));
+    const repoRoot = path.dirname(testFileDir);
+    const bridgePath = path.join(repoRoot, "slack-bridge", "broker-bridge.mjs");
+    const bridgeCwd = path.join(repoRoot, "slack-bridge");
+
+    const bridge = spawn("node", [bridgePath], {
+      cwd: bridgeCwd,
+      env: {
+        ...process.env,
+        SLACK_BROKER_URL: brokerUrl,
+        SLACK_BROKER_WORKSPACE_ID: workspaceId,
+        SLACK_BROKER_SERVER_PRIVATE_KEY: b64(32, 11),
+        SLACK_BROKER_SERVER_PUBLIC_KEY: b64(32, 12),
+        SLACK_BROKER_SERVER_SIGNING_PRIVATE_KEY: signingSeed.toString("base64"),
+        SLACK_BROKER_PUBLIC_KEY: b64(32, 14),
+        SLACK_BROKER_SIGNING_PUBLIC_KEY: b64(32, 15),
+        SLACK_ALLOWED_USERS: "U_ALLOWED",
+        SLACK_BROKER_POLL_INTERVAL_MS: "50",
+        SLACK_BROKER_MAX_MESSAGES: "999",
+        BRIDGE_API_PORT: "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.push(bridge);
+
+    await waitFor(() => pullPayload !== null, 10_000, 50, "timeout waiting for clamped inbox pull request");
+
+    expect(pullPayload.workspace_id).toBe(workspaceId);
+    expect(pullPayload.protocol_version).toBe("2026-02-1");
+    expect(pullPayload.max_messages).toBe(100);
+    expect(pullPayload.wait_seconds).toBe(20);
+
+    const canonical = canonicalizeProtocolRequest(workspaceId, "2026-02-1", "inbox.pull", pullPayload.timestamp, {
+      max_messages: 100,
+      wait_seconds: 20,
+    });
+    const sigBytes = new Uint8Array(Buffer.from(pullPayload.signature, "base64"));
+    const valid = sodium.crypto_sign_verify_detached(sigBytes, canonical, signKeypair.publicKey);
+    expect(valid).toBe(true);
+
+    bridge.kill("SIGTERM");
   });
 });

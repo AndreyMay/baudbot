@@ -47,6 +47,24 @@ export function canonicalizeOutbound(workspace, action, timestamp, encryptedBody
 }
 
 /**
+ * Construct canonical bytes for protocol-versioned inbox pull/ack signing.
+ *
+ * Uses deterministic JSON serialization (sorted keys) to match broker
+ * json-stable-stringify canonicalization.
+ */
+export function canonicalizeProtocolRequest(workspace, protocolVersion, action, timestamp, payload) {
+  return utf8Bytes(
+    stableStringify({
+      workspace_id: workspace,
+      protocol_version: protocolVersion,
+      action,
+      timestamp,
+      payload,
+    }),
+  );
+}
+
+/**
  * Construct canonical bytes for /api/send request signing.
  *
  * Matches broker's `canonicalizeSendRequest()` — includes routing metadata
