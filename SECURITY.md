@@ -2,31 +2,24 @@
 
 For product overview and team workflow context, start with [README.md](README.md). For architecture and operations docs, see [`docs/architecture.md`](docs/architecture.md) and [`docs/operations.md`](docs/operations.md).
 
-## Architecture: Source / Runtime Separation
+## Architecture: Release / Runtime Separation
 
-```
-~/baudbot/                              ← READ-ONLY source repo (admin-managed)
-  ├── pi/extensions/                   ← source of truth for extensions
-  ├── pi/skills/                       ← source of truth for skill templates
-  ├── bin/                             ← admin scripts (deploy.sh, audit, firewall)
-  └── slack-bridge/                    ← source of truth for bridge
+```text
+root-managed releases
+├── /opt/baudbot/releases/<sha>/       # immutable, git-free snapshots
+├── /opt/baudbot/current -> <sha>
+└── /opt/baudbot/previous -> <sha>
 
-~/.pi/agent/
-  ├── extensions/                      ← DEPLOYED copies (real dir, not symlink)
-  │   ├── tool-guard.ts               ← security-critical (deployed by admin)
-  │   ├── auto-name.ts                ← agent-modifiable
-  │   └── ...
-  └── skills/                          ← agent-owned (agent updates freely)
-
-~/runtime/
-  └── slack-bridge/                    ← DEPLOYED copy (bridge runs from here)
-      ├── bridge.mjs                   ← agent-modifiable
-      ├── security.mjs                 ← security-critical (deployed by admin)
-      └── node_modules/
+agent runtime (baudbot_agent)
+├── ~/runtime/                         # launcher + bridge + runtime scripts
+├── ~/.pi/agent/                       # deployed extensions/skills + memory + manifests
+└── ~/workspace/                       # repos + task worktrees
 ```
 
-The agent runs from deployed copies, never from the source repo directly.
-Admin edits source → runs `bin/deploy.sh` → copies to runtime with correct permissions.
+Live execution runs from deployed/runtime copies.
+`baudbot update` publishes a snapshot, deploys runtime files, validates health, then atomically flips `current`.
+
+Live execution runs from release snapshots under `/opt/baudbot`.
 
 ## Trust Boundaries
 
@@ -48,8 +41,8 @@ Admin edits source → runs `bin/deploy.sh` → copies to runtime with correct p
 ┌─────────────────────────────────────────────────────────────────┐
 │               BOUNDARY 2: OS User Isolation                      │
 │   baudbot_agent (uid 1001) — separate home, no sudo              │
-│   Cannot read admin home directory (admin home is 700)           │
-│   Source repo ~/baudbot/ is read-only (permissions first, tool-guard backup) │
+│   In default hardened installs, admin home is not readable by agent (typically mode 700) │
+│   Runtime executes from release snapshots under /opt/baudbot              │
 │   Docker only via wrapper (blocks --privileged, host mounts)     │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
@@ -66,14 +59,13 @@ Admin edits source → runs `bin/deploy.sh` → copies to runtime with correct p
 
 | Layer | What | Bypassed by |
 |-------|------|-------------|
-| **Read-only source** | ~/baudbot/ lives under admin home (700 perms) — agent has zero access. Optional bind mount for defense-in-depth (not applied by default). | Root access |
+| **Immutable releases** | Runtime deploys from git-free snapshots under `/opt/baudbot/releases/<sha>`, reducing direct source-tampering risk during live execution. | Root access |
 | **File permissions** | Security-critical runtime files deployed `chmod a-w` by deploy.sh. Hard OS-level boundary — blocks `sed`, `python`, any write mechanism. | Root access or `chmod u+w` (which tool-guard blocks) |
 | **Tool-guard rules** | Policy/guidance layer: blocks many high-risk Edit/Write/bash patterns and returns safety-interruption reasoning. Not a hard sandbox; novel command patterns may bypass it. | Novel bypass patterns; rely on OS file perms + runtime hardening for hard boundaries |
 | **Integrity checks** | security-audit.sh compares runtime file hashes against deploy manifest | None (detection, not prevention) |
-| **Pre-commit hook** | Blocks git commit of protected files in source repo | --no-verify (root-owned hook) |
+| **Pre-commit hook** | Blocks git commit of protected files in the repository | --no-verify (root-owned hook) |
 
-The read-only source repo is the primary defense. Even if the agent modifies runtime copies,
-the admin can re-deploy from the untampered source at any time.
+Primary hard boundaries are runtime permissions, user isolation, and release-based deployment. If local source isolation is also enforced, admin can re-deploy from source to restore expected state.
 
 ## User Model
 
@@ -84,21 +76,18 @@ the admin can re-deploy from the untampered source at any time.
 
 **Admin → baudbot_agent access**: The admin user is in the `baudbot_agent` group and has `NOPASSWD: ALL` as baudbot_agent via sudo. This is intentional for management. Run `bin/harden-permissions.sh` to ensure pi state files are owner-only (prevents passive group-level reads).
 
-**baudbot_agent → admin access**: None. Admin home is `700`, baudbot_agent is not in the admin user's group.
+**baudbot_agent → admin access**: Expected to be none in default installs. This depends on host permissions (for example, admin home mode and group membership) remaining hardened.
 
 ## Data Flows
 
-```
-Slack @mention
-  → slack-bridge (Socket Mode, admin user)
+```text
+Slack message (Socket Mode or broker pull mode)
+  → bridge process (runs in baudbot_agent runtime)
     → content wrapping (security boundaries added)
-      → Unix socket (~/.pi/session-control/*.sock)
-        → control-agent (pi session, baudbot_agent user)
-          → creates todo
-          → delegates to dev-agent (pi session, baudbot_agent user)
-            → git worktree → code changes → git push
-          → dev-agent reports back
-        → control-agent replies via curl → bridge HTTP API (127.0.0.1:7890)
+      → control-agent (pi session)
+        → creates todo + delegates to dev-agent in worktree
+          → code/test/PR/CI loop
+        → control-agent posts status via bridge local API (127.0.0.1:7890)
       → Slack thread reply
 ```
 
@@ -112,18 +101,21 @@ Slack @mention
 | `KERNEL_API_KEY` | `~/.config/.env` | `600` | Kernel cloud browsers |
 | `BAUDBOT_SECRET` | `~/.config/.env` | `600` | Email authentication shared secret |
 | SSH key | `~/.ssh/id_ed25519` | `600` | Git push (agent GitHub account) |
-| `SLACK_BOT_TOKEN` | Bridge `.env` | `600` | Slack bot OAuth token |
-| `SLACK_APP_TOKEN` | Bridge `.env` | `600` | Slack Socket Mode token |
+| `SLACK_BOT_TOKEN` | `~/.config/.env` | `600` | Slack bot OAuth token |
+| `SLACK_APP_TOKEN` | `~/.config/.env` | `600` | Slack Socket Mode token |
+| `SLACK_BROKER_*` keys | `~/.config/.env` | `600` | Broker pull-mode encryption/signing + workspace linkage |
 
 ## Deploy Workflow
 
 ```bash
-# Admin edits source files in ~/baudbot/
-# Then deploys to runtime:
-~/baudbot/bin/deploy.sh
+# Source-only changes from local checkout
+sudo baudbot deploy
 
-# If bridge is running, restart it:
-sudo -u baudbot_agent bash -c 'cd ~/runtime/slack-bridge && node bridge.mjs'
+# Operational update from git (recommended for live bot)
+sudo baudbot update
+
+# Roll back if needed
+sudo baudbot rollback previous
 ```
 
 ## Known Risks
