@@ -43,6 +43,14 @@ describe("shell script test suites", () => {
     expect(() => runScript("bin/lib/doctor-common.test.sh")).not.toThrow();
   });
 
+  it("doctor cli", () => {
+    expect(() => runScript("bin/doctor.test.sh")).not.toThrow();
+  });
+
+  it("setup helpers", () => {
+    expect(() => runScript("bin/lib/setup-common.test.sh")).not.toThrow();
+  });
+
   it("remote common helpers", () => {
     expect(() => runScript("bin/lib/remote-common.test.sh")).not.toThrow();
   });

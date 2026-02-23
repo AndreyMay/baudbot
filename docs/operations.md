@@ -38,6 +38,13 @@ Provision with a pinned pi version (optional):
 BAUDBOT_PI_VERSION=0.52.12 baudbot install
 ```
 
+Authenticate Claude Code for CLI-backed dev-agents (optional, only needed if using `DEV_AGENT_BACKEND=claude-code`):
+
+```bash
+sudo -u baudbot_agent claude auth login
+sudo -u baudbot_agent claude auth status --text
+```
+
 ## Remote install and repair
 
 `baudbot remote` is an opt-in operator workflow for remote provisioning/install/repair. It is local-CLI stateful (checkpoints + resume) and does not change normal runtime behavior unless you invoke it.

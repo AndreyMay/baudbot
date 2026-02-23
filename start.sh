@@ -14,7 +14,12 @@ set -euo pipefail
 cd ~
 
 # Set PATH
-export PATH="$HOME/.varlock/bin:$HOME/opt/node-v22.14.0-linux-x64/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.varlock/bin:$HOME/opt/node-v22.14.0-linux-x64/bin:$PATH"
+
+# Keep tmux server sockets outside /tmp so systemd PrivateTmp restarts don't strand sessions.
+export TMUX_TMPDIR="$HOME/.tmux"
+mkdir -p "$TMUX_TMPDIR"
+chmod 700 "$TMUX_TMPDIR"
 
 # Work around varlock telemetry config crash by opting out at runtime.
 # This avoids loading anonymousId from user config and keeps startup deterministic.
@@ -82,16 +87,25 @@ elif [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_APP_TOKEN:-}" ]; then
 fi
 
 if [ -n "$BRIDGE_SCRIPT" ]; then
-  tmux kill-session -t slack-bridge 2>/dev/null || true
-  echo "Starting Slack bridge ($BRIDGE_SCRIPT)..."
-  tmux new-session -d -s slack-bridge \
-    "export PATH=$HOME/.varlock/bin:$HOME/opt/node-v22.14.0-linux-x64/bin:\$PATH && \
-     cd ~/runtime/slack-bridge && \
-     while true; do \
-       varlock run --path ~/.config/ -- node $BRIDGE_SCRIPT; \
-       echo '⚠️  Bridge exited (\$?), restarting in 5s...'; \
-       sleep 5; \
-     done"
+  BRIDGE_DIR="$HOME/runtime/slack-bridge"
+  if [ ! -d "$BRIDGE_DIR" ] && [ -d "/opt/baudbot/current/slack-bridge" ]; then
+    BRIDGE_DIR="/opt/baudbot/current/slack-bridge"
+  fi
+
+  if [ -d "$BRIDGE_DIR" ]; then
+    tmux kill-session -t slack-bridge 2>/dev/null || true
+    echo "Starting Slack bridge ($BRIDGE_SCRIPT) from $BRIDGE_DIR..."
+    tmux new-session -d -s slack-bridge \
+      "export PATH=$HOME/.local/bin:$HOME/.varlock/bin:$HOME/opt/node-v22.14.0-linux-x64/bin:\$PATH && \
+       cd $BRIDGE_DIR && \
+       while true; do \
+         varlock run --path ~/.config/ -- node $BRIDGE_SCRIPT; \
+         echo '⚠️  Bridge exited (\$?), restarting in 5s...'; \
+         sleep 5; \
+       done"
+  else
+    echo "⚠️  Slack bridge configured but no bridge directory found; skipping bridge startup."
+  fi
 fi
 
 # Set session name (read by auto-name.ts extension)
@@ -101,7 +115,8 @@ export PI_SESSION_NAME="control-agent"
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   MODEL="anthropic/claude-opus-4-6"
 elif [ -n "${OPENAI_API_KEY:-}" ]; then
-  MODEL="openai/gpt-5.2-codex"
+  # Use a non-reasoning OpenAI model to avoid Responses API store=false reasoning-item failures.
+  MODEL="openai/gpt-5-chat-latest"
 elif [ -n "${GEMINI_API_KEY:-}" ]; then
   MODEL="google/gemini-3-pro-preview"
 elif [ -n "${OPENCODE_ZEN_API_KEY:-}" ]; then

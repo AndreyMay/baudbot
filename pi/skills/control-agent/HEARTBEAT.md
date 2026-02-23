@@ -1,3 +1,7 @@
+---
+description: Control-agent periodic heartbeat checklist for runtime health checks.
+---
+
 # Heartbeat Checklist
 
 Check each item and take action only if something is wrong.

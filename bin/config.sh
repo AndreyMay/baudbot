@@ -434,9 +434,9 @@ if [ "$SLACK_CHOICE" = "Use baudbot.ai Slack integration (easy)" ]; then
   dim "  We'll set up broker registration after install via: sudo baudbot broker register"
   clear_keys SLACK_BOT_TOKEN SLACK_APP_TOKEN
   prompt_secret "SLACK_ALLOWED_USERS" \
-    "Slack user IDs (comma-separated; optional — allow all if empty)" \
+    "Slack user IDs (comma-separated; required)" \
     "Click your Slack profile → ··· → Copy member ID" \
-    "" \
+    "required" \
     "U" \
     "false"
 else
@@ -470,9 +470,9 @@ else
     "xapp-"
 
   prompt_secret "SLACK_ALLOWED_USERS" \
-    "Slack user IDs (comma-separated; optional — allow all if empty)" \
+    "Slack user IDs (comma-separated; required)" \
     "Click your Slack profile → ··· → Copy member ID" \
-    "" \
+    "required" \
     "U" \
     "false"
 fi
@@ -579,7 +579,8 @@ fi
 # ── Validation ───────────────────────────────────────────────────────────────
 
 if [ -z "${ENV_VARS[SLACK_ALLOWED_USERS]:-}" ]; then
-  warn "SLACK_ALLOWED_USERS not set — all workspace members will be allowed"
+  echo "❌ SLACK_ALLOWED_USERS is required for Slack access control"
+  exit 1
 fi
 
 # ── Write config ─────────────────────────────────────────────────────────────

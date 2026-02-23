@@ -17,19 +17,40 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type, } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
-import Kernel from "@onkernel/sdk";
 
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
-function getClient(): Kernel {
+let kernelCtorPromise: Promise<any> | null = null;
+
+async function loadKernelCtor(): Promise<any> {
+	if (!kernelCtorPromise) {
+		kernelCtorPromise = import("@onkernel/sdk")
+			.then((mod) => mod.default ?? mod)
+			.catch(() => null);
+	}
+
+	const ctor = await kernelCtorPromise;
+	if (!ctor) {
+		throw new Error(
+			"Kernel SDK dependency is missing. Install it with: " +
+				"cd ~/.pi/agent/extensions/kernel && npm install --omit=dev",
+		);
+	}
+
+	return ctor;
+}
+
+async function getClient(): Promise<any> {
 	const apiKey = process.env.KERNEL_API_KEY;
 	if (!apiKey) {
 		throw new Error(
 			"KERNEL_API_KEY environment variable is not set. Get one at https://app.onkernel.com",
 		);
 	}
+
+	const Kernel = await loadKernelCtor();
 	return new Kernel({ apiKey });
 }
 
@@ -94,7 +115,7 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_id, params, signal) {
-			const client = getClient();
+			const client = await getClient();
 
 			switch (params.action) {
 				case "create": {
@@ -201,7 +222,7 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_id, params, signal) {
-			const client = getClient();
+			const client = await getClient();
 			const sid = params.session_id ?? activeBrowserId;
 			if (!sid) {
 				return {
@@ -262,7 +283,7 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_id, params, signal) {
-			const client = getClient();
+			const client = await getClient();
 			const sid = params.session_id ?? activeBrowserId;
 			if (!sid) {
 				return {
@@ -321,7 +342,7 @@ export default function (pi: ExtensionAPI) {
 			scroll_y: Type.Optional(Type.Number({ description: "Vertical scroll amount" })),
 		}),
 		async execute(_id, params, signal) {
-			const client = getClient();
+			const client = await getClient();
 			const sid = params.session_id ?? activeBrowserId;
 			if (!sid) {
 				return {
@@ -430,7 +451,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const client = getClient();
+			const client = await getClient();
 
 			try {
 				const browsers: any[] = [];

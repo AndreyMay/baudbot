@@ -194,6 +194,17 @@ pi_control_dir() {
   echo "/home/$agent_user/.pi/session-control"
 }
 
+tmux_socket_dir() {
+  local agent_user="${1:-baudbot_agent}"
+  echo "/home/$agent_user/.tmux"
+}
+
+run_agent_tmux() {
+  local agent_user="$1"
+  shift
+  sudo -u "$agent_user" env TMUX_TMPDIR="$(tmux_socket_dir "$agent_user")" tmux "$@"
+}
+
 pi_alias_to_uuid() {
   local alias_path="$1"
   local target
@@ -306,7 +317,7 @@ cmd_logs() {
   fi
 
   echo "No systemd unit. Check tmux sessions:"
-  echo "  sudo -u baudbot_agent tmux ls"
+  echo "  sudo -u baudbot_agent env TMUX_TMPDIR=/home/baudbot_agent/.tmux tmux ls"
 }
 
 cmd_sessions() {
@@ -317,7 +328,7 @@ cmd_sessions() {
   declare -A ALIASES
 
   echo -e "${BOLD}tmux sessions:${RESET}"
-  if sudo -u "$AGENT_USER" tmux ls 2>/dev/null; then
+  if run_agent_tmux "$AGENT_USER" ls 2>/dev/null; then
     :
   else
     echo "  (none)"
@@ -422,7 +433,8 @@ cmd_attach() {
     echo -e "${GREEN}Safe detach:${RESET} Ctrl+b, d ${DIM}(keeps agent running)${RESET}"
     echo ""
     pause_before_attach
-    exec sudo -u "$AGENT_USER" tmux attach-session -t "$tmux_target"
+    run_agent_tmux "$AGENT_USER" attach-session -t "$tmux_target"
+    exit $?
   }
 
   attach_pi_session() {
@@ -434,7 +446,7 @@ cmd_attach() {
     echo -e "  ${GREEN}Agent keeps running under systemd in the background.${RESET}"
     echo ""
     pause_before_attach
-    exec sudo -u "$AGENT_USER" bash -lc "export PATH='$AGENT_HOME/.varlock/bin:$AGENT_HOME/opt/node-v22.14.0-linux-x64/bin':\$PATH; cd ~; varlock run --path ~/.config/ -- pi --session '$pi_target'"
+    exec sudo -u "$AGENT_USER" bash -lc "export PATH='$AGENT_HOME/.local/bin:$AGENT_HOME/.varlock/bin:$AGENT_HOME/opt/node-v22.14.0-linux-x64/bin':\$PATH; cd ~; varlock run --path ~/.config/ -- pi --session '$pi_target'"
   }
 
   choose_tmux_target() {
@@ -442,14 +454,14 @@ cmd_attach() {
     local first
 
     if [ -n "$requested" ]; then
-      if sudo -u "$AGENT_USER" tmux has-session -t "$requested" 2>/dev/null; then
+      if run_agent_tmux "$AGENT_USER" has-session -t "$requested" 2>/dev/null; then
         echo "$requested"
         return 0
       fi
       return 1
     fi
 
-    first=$(sudo -u "$AGENT_USER" tmux ls -F '#{session_name}' 2>/dev/null | head -1)
+    first=$(run_agent_tmux "$AGENT_USER" ls -F '#{session_name}' 2>/dev/null | head -1)
     [ -n "$first" ] || return 1
     echo "$first"
     return 0

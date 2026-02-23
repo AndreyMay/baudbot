@@ -8,7 +8,7 @@
 #
 # This script:
 #   1. Creates the baudbot_agent user
-#   2. Installs Node.js and pi
+#   2. Installs Node.js, pi, and Claude Code
 #   3. Sets up SSH key for GitHub
 #   4. Installs the Docker wrapper
 #   5. Installs the safe bash wrapper (tool deny list)
@@ -61,8 +61,19 @@ fi
 BAUDBOT_HOME="/home/baudbot_agent"
 # Source repo auto-detected from this script's location (can live anywhere)
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=bin/lib/setup-common.sh
+source "$REPO_DIR/bin/lib/setup-common.sh"
 NODE_VERSION="22.14.0"
 PI_VERSION="${BAUDBOT_PI_VERSION:-0.52.12}"
+NODE_BIN="$BAUDBOT_HOME/opt/node-v$NODE_VERSION-linux-x64/bin"
+CLAUDE_INSTALL_SCRIPT_URL="${CLAUDE_INSTALL_SCRIPT_URL:-https://claude.ai/install.sh}"
+CLAUDE_INSTALL_TARGET="${CLAUDE_INSTALL_TARGET:-}"
+
+if [ -n "$CLAUDE_INSTALL_TARGET" ] && [[ ! "$CLAUDE_INSTALL_TARGET" =~ ^(stable|latest|[0-9]+\.[0-9]+\.[0-9]+(-[^[:space:]]+)?)$ ]]; then
+  echo "❌ Invalid CLAUDE_INSTALL_TARGET: $CLAUDE_INSTALL_TARGET" >&2
+  echo "   Expected: stable, latest, or semver (e.g. 2.1.50)" >&2
+  exit 1
+fi
 
 # Work from a neutral directory — sudo -u baudbot_agent inherits CWD, and
 # git/find fail if CWD is a directory the agent can't access (e.g. /root).
@@ -122,9 +133,29 @@ else
 fi
 
 echo "=== Installing pi $PI_VERSION ==="
-NODE_BIN="$BAUDBOT_HOME/opt/node-v$NODE_VERSION-linux-x64/bin"
 sudo -u baudbot_agent env PATH="$NODE_BIN:$PATH" \
   npm install -g "@mariozechner/pi-coding-agent@$PI_VERSION"
+
+echo "=== Installing Claude Code ==="
+CLAUDE_BIN="$BAUDBOT_HOME/.local/bin/claude"
+if [ ! -x "$CLAUDE_BIN" ]; then
+  echo "Installing via official script: $CLAUDE_INSTALL_SCRIPT_URL"
+  if [ -n "$CLAUDE_INSTALL_TARGET" ]; then
+    sudo -u baudbot_agent env PATH="$NODE_BIN:$PATH" bash -c "curl -fsSL '$CLAUDE_INSTALL_SCRIPT_URL' | bash -s -- '$CLAUDE_INSTALL_TARGET'"
+  else
+    sudo -u baudbot_agent env PATH="$NODE_BIN:$PATH" bash -c "curl -fsSL '$CLAUDE_INSTALL_SCRIPT_URL' | bash"
+  fi
+else
+  echo "Claude Code already installed, skipping installer"
+fi
+
+if [ ! -x "$CLAUDE_BIN" ]; then
+  echo "❌ Claude Code binary not found at $CLAUDE_BIN after install" >&2
+  exit 1
+fi
+
+bb_install_exec_wrapper "/usr/local/bin/claude" "$CLAUDE_BIN"
+echo "Installed /usr/local/bin/claude wrapper (works with sudo secure_path)"
 
 echo "=== Configuring git identity ==="
 GIT_USER_NAME="${GIT_USER_NAME:-baudbot-agent}"
@@ -156,6 +187,9 @@ for repo in "$BAUDBOT_HOME"/workspace/*/; do
 done
 
 echo "=== Adding PATH to bashrc ==="
+if ! grep -q '\.local/bin' "$BAUDBOT_HOME/.bashrc"; then
+  sudo -u baudbot_agent bash -c "echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.bashrc"
+fi
 if ! grep -q "node-v$NODE_VERSION" "$BAUDBOT_HOME/.bashrc"; then
   sudo -u baudbot_agent bash -c "echo 'export PATH=\$HOME/opt/node-v$NODE_VERSION-linux-x64/bin:\$PATH' >> ~/.bashrc"
 fi
@@ -229,7 +263,6 @@ sudo -u baudbot_agent bash -c '
 
 echo "=== Installing extension dependencies ==="
 # npm install runs in source (admin-owned) then deploy copies to runtime
-NODE_BIN="$BAUDBOT_HOME/opt/node-v$NODE_VERSION-linux-x64/bin"
 export PATH="$NODE_BIN:$PATH"
 while IFS= read -r dir; do
   ext_name="$(basename "$dir")"
@@ -337,7 +370,9 @@ echo "  3. Add SSH key to your agent's GitHub account:"
 echo "     cat $BAUDBOT_HOME/.ssh/id_ed25519.pub"
 echo "  4. Authenticate GitHub CLI:"
 echo "     sudo -u baudbot_agent gh auth login"
-echo "  5. Log out and back in for group membership to take effect"
+echo "  5. Authenticate Claude Code (recommended for claude-code backend):"
+echo "     sudo -u baudbot_agent claude auth login"
+echo "  6. Log out and back in for group membership to take effect"
 echo ""
 echo "Commands:"
 echo "  baudbot start        Start the agent"

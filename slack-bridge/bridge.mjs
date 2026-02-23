@@ -114,26 +114,48 @@ function getThreadId(channel, threadTs) {
 // ── Session Socket ──────────────────────────────────────────────────────────
 
 function findSessionSocket(targetId) {
+  const resolveAliasSocket = (aliasName) => {
+    const aliasPath = path.join(SOCKET_DIR, `${aliasName}.alias`);
+    if (!fs.existsSync(aliasPath)) return null;
+    try {
+      const target = fs.readlinkSync(aliasPath);
+      const resolved = path.resolve(SOCKET_DIR, target);
+      if (resolved.endsWith(".sock") && fs.existsSync(resolved)) return resolved;
+    } catch {
+      // Ignore alias read errors and continue with fallback discovery.
+    }
+    return null;
+  };
+
   if (targetId) {
     // Try as UUID first
     const sock = path.join(SOCKET_DIR, `${targetId}.sock`);
     if (fs.existsSync(sock)) return sock;
 
+    // Try as direct alias (<name>.alias -> <uuid>.sock)
+    const aliasSock = resolveAliasSocket(targetId);
+    if (aliasSock) return aliasSock;
+
     // Try as session name — check the alias symlinks
     const aliasDir = path.join(SOCKET_DIR, "by-name");
     if (fs.existsSync(aliasDir)) {
-      const aliasSock = path.join(aliasDir, `${targetId}.sock`);
-      if (fs.existsSync(aliasSock)) return fs.realpathSync(aliasSock);
+      const byNameSock = path.join(aliasDir, `${targetId}.sock`);
+      if (fs.existsSync(byNameSock)) return fs.realpathSync(byNameSock);
     }
 
     // Fallback: scan sockets and try to match by name via RPC
     throw new Error(`Socket not found for session "${targetId}". Use the full session UUID from: ls ~/.pi/session-control/`);
   }
-  // Auto-detect: pick the first available socket
+
+  // Auto-detect: prefer control-agent alias when present.
+  const controlAgentSock = resolveAliasSocket("control-agent");
+  if (controlAgentSock) return controlAgentSock;
+
+  // Otherwise pick the first available socket if unambiguous.
   const socks = fs.readdirSync(SOCKET_DIR).filter((f) => f.endsWith(".sock"));
   if (socks.length === 0) throw new Error("No pi sessions with control sockets found");
   if (socks.length === 1) return path.join(SOCKET_DIR, socks[0]);
-  console.log("Multiple sessions found. Set PI_SESSION_ID to pick one:");
+  console.log("Multiple sessions found and no control-agent alias. Set PI_SESSION_ID to pick one:");
   socks.forEach((s) => console.log(`  ${s.replace(".sock", "")}`));
   throw new Error("Ambiguous — multiple sessions found");
 }

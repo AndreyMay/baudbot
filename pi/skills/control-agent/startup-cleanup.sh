@@ -77,7 +77,12 @@ fi
 # then Socket Mode when SLACK_BOT_TOKEN + SLACK_APP_TOKEN are present.
 # If neither mode is configured, skip bridge startup.
 BRIDGE_SCRIPT=""
-if [ -f "$HOME/runtime/slack-bridge/broker-bridge.mjs" ] && varlock run --path "$HOME/.config/" -- sh -c '
+BRIDGE_DIR="$HOME/runtime/slack-bridge"
+if [ ! -d "$BRIDGE_DIR" ] && [ -d "/opt/baudbot/current/slack-bridge" ]; then
+  BRIDGE_DIR="/opt/baudbot/current/slack-bridge"
+fi
+
+if [ -f "$BRIDGE_DIR/broker-bridge.mjs" ] && varlock run --path "$HOME/.config/" -- sh -c '
   test -n "$SLACK_BROKER_URL" &&
   test -n "$SLACK_BROKER_WORKSPACE_ID" &&
   test -n "$SLACK_BROKER_SERVER_PRIVATE_KEY" &&
@@ -99,10 +104,17 @@ if [ -z "$BRIDGE_SCRIPT" ]; then
   exit 0
 fi
 
+if [ ! -d "$BRIDGE_DIR" ]; then
+  echo "Bridge directory not found (expected $HOME/runtime/slack-bridge or /opt/baudbot/current/slack-bridge); skipping bridge startup."
+  echo ""
+  echo "=== Cleanup Complete ==="
+  exit 0
+fi
+
 # Start fresh slack-bridge
-echo "Starting slack-bridge ($BRIDGE_SCRIPT) with PI_SESSION_ID=$MY_UUID..."
+echo "Starting slack-bridge ($BRIDGE_SCRIPT) from $BRIDGE_DIR with PI_SESSION_ID=$MY_UUID..."
 tmux new-session -d -s slack-bridge \
-  "unset PKG_EXECPATH; export PATH=\$HOME/.varlock/bin:\$HOME/opt/node-v22.14.0-linux-x64/bin:\$PATH && export PI_SESSION_ID=$MY_UUID && cd ~/runtime/slack-bridge && exec varlock run --path ~/.config/ -- node $BRIDGE_SCRIPT"
+  "unset PKG_EXECPATH; export PATH=\$HOME/.local/bin:\$HOME/.varlock/bin:\$HOME/opt/node-v22.14.0-linux-x64/bin:\$PATH && export PI_SESSION_ID=$MY_UUID && cd $BRIDGE_DIR && while true; do varlock run --path ~/.config/ -- node $BRIDGE_SCRIPT; echo 'Bridge exited (\$?), restarting in 5s...'; sleep 5; done"
 
 # Wait for bridge to come up
 sleep 3

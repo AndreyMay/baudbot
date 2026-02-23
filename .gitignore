@@ -9,3 +9,7 @@ slack-bridge/.env
 # Coverage
 coverage/
 .c8_output/
+
+
+.tmp
+.state

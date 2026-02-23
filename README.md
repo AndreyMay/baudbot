@@ -52,7 +52,7 @@ Baudbot is designed as shared engineering infrastructure, not a single-user desk
 | **CPU** | 2 vCPU | 4 vCPU |
 | **Disk** | 20 GB | 40 GB+ (repos, dependencies, Docker images) |
 
-System package dependencies (installed by `baudbot install`): `git`, `curl`, `tmux`, `iptables`, `docker`, `gh`, `jq`, `sudo`.
+System package dependencies (installed by `baudbot install`): `git`, `curl`, `tmux`, `iptables`, `docker`, `gh`, `jq`, `ripgrep`, `sudo`.
 
 ## Quick Start
 
@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/modem-dev/baudbot/main/bootstrap.sh
 baudbot install
 ```
 
-`baudbot install` includes a guided config flow: pick an LLM provider, choose Slack integration mode (managed broker vs custom app), then opt into optional integrations (Kernel/Sentry). Email capabilities are disabled by default and only available in experimental mode (`baudbot setup --experimental` / `install.sh --experimental`). If [`gum`](https://github.com/charmbracelet/gum) is installed, prompts use richer TUI widgets; otherwise installer falls back to standard bash prompts.
+`baudbot install` includes a guided config flow: pick an LLM provider, choose Slack integration mode (managed broker vs custom app), then opt into optional integrations (Kernel/Sentry). Host setup installs Node.js + pi and also installs Claude Code via the official installer script for `baudbot_agent`, exposing a root-owned `/usr/local/bin/claude` wrapper for sudo-safe invocation. Email capabilities are disabled by default and only available in experimental mode (`baudbot setup --experimental` / `install.sh --experimental`). If [`gum`](https://github.com/charmbracelet/gum) is installed, prompts use richer TUI widgets; otherwise installer falls back to standard bash prompts.
 
 After install:
 

@@ -231,7 +231,7 @@ Pick the model based on which API key is available (check env vars in this order
 | API key | Model |
 |---------|-------|
 | `ANTHROPIC_API_KEY` | `anthropic/claude-opus-4-6` |
-| `OPENAI_API_KEY` | `openai/gpt-5.2-codex` |
+| `OPENAI_API_KEY` | `openai/gpt-5-chat-latest` |
 | `GEMINI_API_KEY` | `google/gemini-3-pro-preview` |
 | `OPENCODE_ZEN_API_KEY` | `opencode-zen/claude-opus-4-6` |
 
@@ -342,7 +342,7 @@ Pick the model based on which API key is available (check env vars in this order
 | API key | Model |
 |---------|-------|
 | `ANTHROPIC_API_KEY` | `anthropic/claude-haiku-4-5` |
-| `OPENAI_API_KEY` | `openai/gpt-5-mini` |
+| `OPENAI_API_KEY` | `openai/gpt-4.1-mini` |
 | `GEMINI_API_KEY` | `google/gemini-3-flash-preview` |
 | `OPENCODE_ZEN_API_KEY` | `opencode-zen/claude-haiku-4-5` |
 
@@ -477,7 +477,7 @@ The sentry-agent triages Sentry alerts and investigates critical issues via the 
 | API key | Model |
 |---------|-------|
 | `ANTHROPIC_API_KEY` | `anthropic/claude-haiku-4-5` |
-| `OPENAI_API_KEY` | `openai/gpt-5-mini` |
+| `OPENAI_API_KEY` | `openai/gpt-4.1-mini` |
 | `GEMINI_API_KEY` | `google/gemini-3-flash-preview` |
 | `OPENCODE_ZEN_API_KEY` | `opencode-zen/claude-haiku-4-5` |
 

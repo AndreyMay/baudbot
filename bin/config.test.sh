@@ -85,24 +85,26 @@ echo ""
 
 # Test 1: Advanced Slack path writes socket-mode keys only
 HOME1="$TMPDIR/advanced"
-run_config "$HOME1" '1\nsk-ant-test\n2\nxoxb-test\nxapp-test\n\nn\nn\n'
+run_config "$HOME1" '1\nsk-ant-test\n2\nxoxb-test\nxapp-test\nU01ADVANCED\nn\nn\n'
 ENV1="$HOME1/.baudbot/.env"
 expect_file_contains "advanced path writes Anthropic key" "$ENV1" "ANTHROPIC_API_KEY=sk-ant-test"
 expect_file_contains "advanced path writes SLACK_BOT_TOKEN" "$ENV1" "SLACK_BOT_TOKEN=xoxb-test"
 expect_file_contains "advanced path writes SLACK_APP_TOKEN" "$ENV1" "SLACK_APP_TOKEN=xapp-test"
+expect_file_contains "advanced path writes SLACK_ALLOWED_USERS" "$ENV1" "SLACK_ALLOWED_USERS=U01ADVANCED"
 expect_file_not_contains "advanced path does not write OPENAI key" "$ENV1" "OPENAI_API_KEY="
 
 # Test 2: Easy Slack path avoids socket-mode keys
 HOME2="$TMPDIR/easy"
-run_config "$HOME2" '2\nsk-openai-test\n1\n\nn\nn\n'
+run_config "$HOME2" '2\nsk-openai-test\n1\nU02EASY\nn\nn\n'
 ENV2="$HOME2/.baudbot/.env"
 expect_file_contains "easy path writes OpenAI key" "$ENV2" "OPENAI_API_KEY=sk-openai-test"
 expect_file_not_contains "easy path omits SLACK_BOT_TOKEN" "$ENV2" "SLACK_BOT_TOKEN="
 expect_file_not_contains "easy path omits SLACK_APP_TOKEN" "$ENV2" "SLACK_APP_TOKEN="
+expect_file_contains "easy path writes SLACK_ALLOWED_USERS" "$ENV2" "SLACK_ALLOWED_USERS=U02EASY"
 
 # Test 3: Optional integration toggle prompts conditionally
 HOME3="$TMPDIR/kernel"
-run_config "$HOME3" '3\ngem-key\n2\nxoxb-test\nxapp-test\n\ny\nkernel-key\nn\n'
+run_config "$HOME3" '3\ngem-key\n2\nxoxb-test\nxapp-test\nU03KERNEL\ny\nkernel-key\nn\n'
 ENV3="$HOME3/.baudbot/.env"
 expect_file_contains "kernel enabled writes key" "$ENV3" "KERNEL_API_KEY=kernel-key"
 expect_file_not_contains "sentry skipped omits token" "$ENV3" "SENTRY_AUTH_TOKEN="
@@ -115,18 +117,22 @@ expect_exit_nonzero "fails when selected provider key is missing" "$HOME4" '1\n\
 # Test 5: Re-run preserves existing selected LLM key when input is blank
 HOME5="$TMPDIR/rerun-keep-llm"
 write_existing_env "$HOME5" 'ANTHROPIC_API_KEY=sk-ant-existing\n'
-run_config "$HOME5" '1\n\n1\n\nn\nn\n'
+run_config "$HOME5" '1\n\n1\nU05KEEP\nn\nn\n'
 ENV5="$HOME5/.baudbot/.env"
 expect_file_contains "rerun keeps existing Anthropic key" "$ENV5" "ANTHROPIC_API_KEY=sk-ant-existing"
 
 # Test 6: Advanced Slack mode clears stale broker registration keys
 HOME6="$TMPDIR/clear-broker"
 write_existing_env "$HOME6" 'OPENAI_API_KEY=sk-old\nSLACK_BROKER_URL=https://broker.example.com\nSLACK_BROKER_WORKSPACE_ID=T0123\nSLACK_BROKER_PUBLIC_KEY=abc\n'
-run_config "$HOME6" '2\nsk-openai-new\n2\nxoxb-new\nxapp-new\n\nn\nn\n'
+run_config "$HOME6" '2\nsk-openai-new\n2\nxoxb-new\nxapp-new\nU06CLEAR\nn\nn\n'
 ENV6="$HOME6/.baudbot/.env"
 expect_file_not_contains "advanced clears broker URL" "$ENV6" "SLACK_BROKER_URL="
 expect_file_not_contains "advanced clears broker workspace" "$ENV6" "SLACK_BROKER_WORKSPACE_ID="
 expect_file_contains "advanced retains socket bot token" "$ENV6" "SLACK_BOT_TOKEN=xoxb-new"
+
+# Test 7: SLACK_ALLOWED_USERS is required
+HOME7="$TMPDIR/missing-slack-users"
+expect_exit_nonzero "fails when Slack user IDs are missing" "$HOME7" '2\nsk-openai\n2\nxoxb-miss\nxapp-miss\n\nn\nn\n'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

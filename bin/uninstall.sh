@@ -222,7 +222,7 @@ fi
 # ── 6. Remove /usr/local/bin wrappers ───────────────────────────────────────
 
 echo "=== Removing system wrappers ==="
-for bin in baudbot-docker baudbot-safe-bash; do
+for bin in baudbot-docker baudbot-safe-bash claude; do
   if [ -f "/usr/local/bin/$bin" ]; then
     run rm -f "/usr/local/bin/$bin"
     removed "/usr/local/bin/$bin"

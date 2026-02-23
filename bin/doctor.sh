@@ -85,6 +85,12 @@ else
   fail "jq not found (required for shell JSON parsing)"
 fi
 
+if command -v rg &>/dev/null; then
+  pass "rg is installed ($(command -v rg))"
+else
+  fail "rg not found (install ripgrep)"
+fi
+
 if command -v docker &>/dev/null; then
   pass "docker is available"
 else
@@ -99,6 +105,29 @@ if command -v gh &>/dev/null; then
   fi
 else
   fail "gh cli not found"
+fi
+
+check_claude_path() {
+  local probe_path probe_output current_user
+  probe_path="$BAUDBOT_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+  current_user="$(id -un 2>/dev/null || true)"
+
+  if [ "$IS_ROOT" -eq 1 ] && command -v sudo &>/dev/null; then
+    probe_output="$(sudo -u "$BAUDBOT_AGENT_USER" env PATH="$probe_path" sh -lc 'command -v claude' 2>/dev/null || true)"
+  elif [ "$current_user" = "$BAUDBOT_AGENT_USER" ]; then
+    probe_output="$(env PATH="$probe_path:$PATH" sh -lc 'command -v claude' 2>/dev/null || true)"
+  else
+    probe_output="$(env PATH="$probe_path:$PATH" sh -lc 'command -v claude' 2>/dev/null || true)"
+  fi
+
+  printf '%s\n' "$probe_output" | head -n1
+}
+
+CLAUDE_PATH="$(check_claude_path)"
+if [ -n "$CLAUDE_PATH" ]; then
+  pass "claude code is installed ($CLAUDE_PATH)"
+else
+  warn "claude code not found for $BAUDBOT_AGENT_USER (run: curl -fsSL https://claude.ai/install.sh | bash)"
 fi
 
 # ── Secrets ──────────────────────────────────────────────────────────────────
@@ -233,7 +262,7 @@ if [ -f "$ENV_FILE" ]; then
   if grep -q '^SLACK_ALLOWED_USERS=.\+' "$ENV_FILE" 2>/dev/null; then
     pass "SLACK_ALLOWED_USERS is set"
   else
-    warn "SLACK_ALLOWED_USERS is not set (all workspace members allowed)"
+    fail "SLACK_ALLOWED_USERS is not set"
   fi
 else
   if [ "$IS_ROOT" -ne 1 ] && [ -d "$BAUDBOT_HOME/.config" ]; then

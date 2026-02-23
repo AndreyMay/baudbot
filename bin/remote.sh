@@ -550,11 +550,18 @@ remote_run_install_lifecycle() {
   local tailscale_auth_key="$5"
   local dry_run="$6"
 
+  local -a checkpoints
+  local checkpoint_line=""
+  while IFS= read -r checkpoint_line; do
+    [ -n "$checkpoint_line" ] || continue
+    checkpoints+=("$checkpoint_line")
+  done < <(remote_install_checkpoint_order "$mode")
+
   while true; do
     local restart_from_beginning=0
     local checkpoint=""
 
-    while IFS= read -r checkpoint; do
+    for checkpoint in "${checkpoints[@]}"; do
       [ -n "$checkpoint" ] || continue
 
       if remote_checkpoint_is_complete "$target" "$checkpoint"; then
@@ -601,7 +608,7 @@ remote_run_install_lifecycle() {
       if [ "$restart_from_beginning" = "1" ]; then
         break
       fi
-    done < <(remote_install_checkpoint_order "$mode")
+    done
 
     if [ "$restart_from_beginning" = "1" ]; then
       continue

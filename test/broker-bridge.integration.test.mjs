@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import sodium from "libsodium-wrappers-sumo";
 import {
@@ -461,6 +461,214 @@ describe("broker pull bridge semi-integration", () => {
 
     expect(sendPayloads.some((payload) => payload.action === "chat.postMessage")).toBe(false);
     expect(sendPayloads.some((payload) => payload.action === "reactions.add")).toBe(false);
+  });
+
+  it("prefers control-agent alias when multiple pi session sockets exist", async () => {
+    await sodium.ready;
+
+    const testFileDir = path.dirname(fileURLToPath(import.meta.url));
+    const repoRoot = path.dirname(testFileDir);
+    const bridgePath = path.join(repoRoot, "slack-bridge", "broker-bridge.mjs");
+    const bridgeCwd = path.join(repoRoot, "slack-bridge");
+
+    const tempHome = createBridgeHome(tempDirs);
+    const sessionDir = path.join(tempHome, ".pi", "session-control");
+    mkdirSync(sessionDir, { recursive: true });
+
+    const controlSessionId = "22222222-2222-2222-2222-222222222222";
+    const sentrySessionId = "33333333-3333-3333-3333-333333333333";
+    const controlSocketFile = path.join(sessionDir, `${controlSessionId}.sock`);
+    const sentrySocketFile = path.join(sessionDir, `${sentrySessionId}.sock`);
+    symlinkSync(`${controlSessionId}.sock`, path.join(sessionDir, "control-agent.alias"));
+
+    const controlCommands = [];
+    const sentryCommands = [];
+
+    const controlSocket = net.createServer((conn) => {
+      let buffer = "";
+      conn.on("data", (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const msg = JSON.parse(line);
+          controlCommands.push(msg);
+          if (msg.type === "send") {
+            conn.write(`${JSON.stringify({ type: "response", command: "send", success: true })}\n`);
+          }
+        }
+      });
+    });
+    if (!(await listenUnixSocketOrUnavailable(controlSocket, controlSocketFile))) return;
+    servers.push(controlSocket);
+
+    const sentrySocket = net.createServer((conn) => {
+      let buffer = "";
+      conn.on("data", (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const msg = JSON.parse(line);
+          sentryCommands.push(msg);
+          if (msg.type === "send") {
+            conn.write(`${JSON.stringify({ type: "response", command: "send", success: true })}\n`);
+          }
+        }
+      });
+    });
+    if (!(await listenUnixSocketOrUnavailable(sentrySocket, sentrySocketFile))) return;
+    servers.push(sentrySocket);
+
+    const serverBox = sodium.crypto_box_keypair();
+    const brokerBox = sodium.crypto_box_keypair();
+    const brokerSign = sodium.crypto_sign_keypair();
+    const serverSignSeed = sodium.randombytes_buf(sodium.crypto_sign_SEEDBYTES);
+
+    const workspaceId = "T123BROKER";
+    const eventPayload = {
+      type: "event_callback",
+      event: {
+        type: "app_mention",
+        user: "U_ALLOWED",
+        channel: "C123",
+        ts: "1730000000.000200",
+        text: "<@U_BOT> route to control alias",
+      },
+    };
+
+    const encrypted = sodium.crypto_box_seal(
+      Buffer.from(JSON.stringify(eventPayload)),
+      serverBox.publicKey,
+    );
+    const brokerTimestamp = Math.floor(Date.now() / 1000);
+    const encryptedB64 = toBase64(encrypted);
+    const brokerSignature = toBase64(
+      sodium.crypto_sign_detached(
+        canonicalizeEnvelope(workspaceId, brokerTimestamp, encryptedB64),
+        brokerSign.privateKey,
+      ),
+    );
+
+    let pullCount = 0;
+    let ackPayload = null;
+    const sendPayloads = [];
+
+    const broker = createServer(async (req, res) => {
+      if (req.method === "POST" && req.url === "/api/inbox/pull") {
+        pullCount += 1;
+        const messages = pullCount === 1
+          ? [{
+              message_id: "m-alias-1",
+              workspace_id: workspaceId,
+              encrypted: encryptedB64,
+              broker_timestamp: brokerTimestamp,
+              broker_signature: brokerSignature,
+            }]
+          : [];
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, messages }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/inbox/ack") {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        ackPayload = JSON.parse(raw);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, acked: ackPayload.message_ids?.length ?? 0 }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/send") {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        sendPayloads.push(JSON.parse(raw));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ts: "1234.5678" }));
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "not found" }));
+    });
+
+    if (!(await listenLocalhostOrUnavailable(broker, 0))) return;
+    servers.push(broker);
+
+    const address = broker.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to get broker test server address");
+    }
+    const brokerUrl = `http://127.0.0.1:${address.port}`;
+
+    let bridgeStdout = "";
+    let bridgeStderr = "";
+    let bridgeExit = null;
+
+    const bridge = spawn("node", [bridgePath], {
+      cwd: bridgeCwd,
+      env: {
+        ...process.env,
+        HOME: tempHome,
+        SLACK_BROKER_URL: brokerUrl,
+        SLACK_BROKER_WORKSPACE_ID: workspaceId,
+        SLACK_BROKER_SERVER_PRIVATE_KEY: toBase64(serverBox.privateKey),
+        SLACK_BROKER_SERVER_PUBLIC_KEY: toBase64(serverBox.publicKey),
+        SLACK_BROKER_SERVER_SIGNING_PRIVATE_KEY: toBase64(serverSignSeed),
+        SLACK_BROKER_PUBLIC_KEY: toBase64(brokerBox.publicKey),
+        SLACK_BROKER_SIGNING_PUBLIC_KEY: toBase64(brokerSign.publicKey),
+        SLACK_ALLOWED_USERS: "U_ALLOWED",
+        SLACK_BROKER_POLL_INTERVAL_MS: "50",
+        BRIDGE_API_PORT: "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    bridge.stdout.on("data", (chunk) => {
+      bridgeStdout += chunk.toString();
+    });
+    bridge.stderr.on("data", (chunk) => {
+      bridgeStderr += chunk.toString();
+    });
+
+    const bridgeExited = new Promise((_, reject) => {
+      bridge.on("error", (err) => {
+        if (ackPayload !== null) return;
+        reject(new Error(`bridge spawn error: ${err.message}; stdout=${bridgeStdout}; stderr=${bridgeStderr}`));
+      });
+      bridge.on("exit", (code, signal) => {
+        bridgeExit = { code, signal };
+        if (ackPayload !== null) return;
+        reject(new Error(`bridge exited early: code=${code} signal=${signal}; stdout=${bridgeStdout}; stderr=${bridgeStderr}`));
+      });
+    });
+
+    children.push(bridge);
+
+    const completeWait = waitFor(
+      () => ackPayload !== null && controlCommands.length > 0,
+      12_000,
+      50,
+      `timeout waiting for alias-route forward+ack; pullCount=${pullCount}; control=${JSON.stringify(controlCommands)}; sentry=${JSON.stringify(sentryCommands)}; sendPayloads=${JSON.stringify(sendPayloads)}; exit=${JSON.stringify(bridgeExit)}; stdout=${bridgeStdout}; stderr=${bridgeStderr}`,
+    );
+
+    await Promise.race([completeWait, bridgeExited]);
+
+    expect(ackPayload.workspace_id).toBe(workspaceId);
+    expect(ackPayload.message_ids).toContain("m-alias-1");
+
+    expect(controlCommands.length).toBe(1);
+    expect(controlCommands[0].type).toBe("send");
+    expect(controlCommands[0].mode).toBe("steer");
+    expect(sentryCommands.length).toBe(0);
+
+    expect(sendPayloads.some((payload) => payload.action === "chat.postMessage")).toBe(false);
+    expect(sendPayloads.some((payload) => payload.action === "reactions.add")).toBe(false);
+    expect(bridgeStdout).not.toContain("Ambiguous");
   });
 
   it("uses protocol-versioned inbox.pull signatures with wait_seconds by default", async () => {
